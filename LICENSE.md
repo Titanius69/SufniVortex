@@ -1,7 +1,7 @@
 **Luminex Studios Software License Agreement**
 
 **Software Name:** SufniVortex Browser  
-**Version:** 1.0  
+**Version:** 1.1  
 **Publisher:** Luminex Studios  
 **License Holder:** 69_unicum_69  
 
