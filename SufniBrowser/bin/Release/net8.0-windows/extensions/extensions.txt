@@ -1,0 +1,4 @@
+SufniVortexExtension1.dll
+VidPout2.dll
+DarkModeExtension.dll
+AdBlockerExtension.dll

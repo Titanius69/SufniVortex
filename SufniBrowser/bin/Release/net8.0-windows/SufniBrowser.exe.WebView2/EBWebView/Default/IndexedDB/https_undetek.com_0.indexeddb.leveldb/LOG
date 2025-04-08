@@ -1,0 +1,6 @@
+2025/02/13-15:35:09.582 28cc Creating DB C:\Users\tomi2\source\repos\SufniBrowser\SufniBrowser\bin\Release\net8.0-windows\SufniBrowser.exe.WebView2\EBWebView\Default\IndexedDB\https_undetek.com_0.indexeddb.leveldb since it was missing.
+2025/02/13-15:35:09.590 28cc Reusing MANIFEST C:\Users\tomi2\source\repos\SufniBrowser\SufniBrowser\bin\Release\net8.0-windows\SufniBrowser.exe.WebView2\EBWebView\Default\IndexedDB\https_undetek.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/02/13-15:35:09.647 1b20 Level-0 table #5: started
+2025/02/13-15:35:09.654 1b20 Level-0 table #5: 1395 bytes OK
+2025/02/13-15:35:09.656 1b20 Delete type=0 #3
+2025/02/13-15:35:09.657 28cc Manual compaction at level-0 from '\x00\x01\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x02\x00\x00\x00' @ 0 : 0; will stop at (end)

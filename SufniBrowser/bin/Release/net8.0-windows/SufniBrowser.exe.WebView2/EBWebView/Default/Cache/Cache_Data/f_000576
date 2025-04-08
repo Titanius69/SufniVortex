@@ -1,0 +1,3546 @@
+/* Bundle Includes:
+ *   js/ui/elementSwitcher.js
+ *   js/ui/components/component.js
+ *   js/ui/components/interactable.js
+ *   js/ui/components/link.js
+ *   js/ui/components/button.js
+ *   js/ui/components/checkbox.js
+ *   js/ui/components/rack-slot.js
+ *   js/ui/components/rack.js
+ *   js/ui/components/toast.js
+ *   js/ui/components/overlay.js
+ *   js/ui/components/sheet.js
+ *   js/mobile/mobile.header.js
+ *   js/mobile/mobile.top.menu.js
+ */
+
+lazy(mega, 'elementSwitcher', () => {
+    'use strict';
+
+    const setUpSwitchers = {};
+
+    return (elements, initialState, switcherName, hideAllOnInit) => {
+
+        if (d && !switcherName) {
+            console.warn('Please provide a switcher name for the elementSwitcher to reduce the risk of duplication.');
+        }
+
+        if (switcherName && setUpSwitchers[switcherName]) {
+            return setUpSwitchers[switcherName];
+        }
+
+        elements = {...elements};
+
+        let elementKeys = Object.keys(elements);
+        let currentElement;
+
+        const appendElement = (elementKey) => {
+
+            const {initialised, $target, onElementAppend, extras} = elements[elementKey];
+            let {$element} = elements[elementKey];
+
+            if (initialised) {
+                return $element;
+            }
+
+            if (!$element) {
+                return false;
+            }
+
+            let id = $element.attr('id');
+            const keepID = !!id;
+
+            if (!keepID) {
+                id = 'es-temp';
+                $element.attr('id', id);
+            }
+
+            $target.safeAppend($element.prop('outerHTML'));
+            $element = $(`#${id}`, $target);
+
+            if (!keepID) {
+                $element.removeAttr('id');
+                const duplicatedID = document.getElementById('es-temp');
+                if (duplicatedID) {
+                    console.assert(!d, 'Duplicated id "es-temp", something has broken in elementSwitcher!');
+                    duplicatedID.remove();
+                }
+            }
+
+            if (typeof onElementAppend === 'function') {
+                onElementAppend($element, extras);
+            }
+
+            elements[elementKey].$element = $element;
+            elements[elementKey].initialised = true;
+            elements[elementKey].appendedBySwitcher = true;
+
+            return $element;
+        };
+
+        const showElement = (elementKey) => {
+
+            if (!elements[elementKey]) {
+                return;
+            }
+
+            const {onElementShow, extras} = elements[elementKey];
+
+            const $element = appendElement(elementKey);
+            const elementChaged = elementKey !== currentElement;
+
+
+            const doOnElementShow = () => {
+                if ((typeof onElementShow === 'function') && $element) {
+                    onElementShow($element, extras);
+                }
+            };
+
+            if (currentElement === elementKey) {
+                doOnElementShow();
+                return;
+            }
+
+            if ($element) {
+                if (currentElement !== undefined && elements[currentElement]) {
+                    elements[currentElement].$element.addClass('hidden');
+                }
+
+                currentElement = elementKey;
+                $element.removeClass('hidden');
+
+                doOnElementShow();
+
+                if (elementChaged) {
+                    const {onElementChange} = elements;
+                    if (typeof onElementChange === 'function') {
+                        onElementChange($element);
+                    }
+                }
+            }
+        };
+
+        const remove = (elementKey) => {
+            if (elements[elementKey]) {
+                if (elements[elementKey].appendedBySwitcher) {
+                    elements[elementKey].$element.remove();
+                }
+                delete elements[elementKey];
+                elementKeys = Object.keys(elements);
+            }
+            else if (!elementKey) {
+                for (const key in elements) {
+                    if (elements.hasOwnProperty(key)) {
+                        remove(key);
+                    }
+                }
+                delete setUpSwitchers[switcherName];
+            }
+        };
+
+        const hide = () => {
+            if (currentElement) {
+                const {onElementChange} = elements;
+                const $element = elements[currentElement].$element;
+                $element.addClass('hidden');
+                if (typeof onElementChange === 'function') {
+                    onElementChange($element);
+                }
+                currentElement = undefined;
+            }
+        };
+
+        const getVal = () => currentElement;
+
+        const init = () => {
+            if (hideAllOnInit) {
+                for (const key in elements) {
+                    if (elements.hasOwnProperty(key) && (key !== 'onElementChange')) {
+                        appendElement(key).addClass('hidden');
+                    }
+                }
+            }
+
+            if (elementKeys.length && (typeof initialState !== 'undefined')) {
+                showElement(initialState || elementKeys[0]);
+            }
+
+            setUpSwitchers[switcherName] = {
+                showElement,
+                remove,
+                hide,
+                getVal,
+            };
+        };
+
+        init();
+
+        return setUpSwitchers[switcherName];
+    };
+});
+
+class MegaComponent extends MegaDataEmitter {
+
+    constructor(options) {
+
+        super();
+
+        // If parent node is not passed do not build anything
+        if (!options.parentNode) {
+
+            if (d) {
+                console.error('MegaComponent - error: Target parent node to attach component is not passed');
+            }
+
+            return;
+        }
+
+        this.parentNode = options.parentNode;
+
+        // If parent node is defined start build
+        this.domNode = document.createElement(options.nodeType || 'div');
+        this.domNode.className = 'mega-component';
+
+        if (options.componentClassname) {
+            this.domNode.className += ` ${options.componentClassname}`;
+        }
+
+        // Registered Custom Event list
+        this.rCE = [];
+
+        const ref = new WeakRef(this);
+
+        Object.defineProperty(this.domNode, 'component', {get: () => ref.deref()});
+
+        if (options.prepend) {
+            options.parentNode.prepend(this.domNode);
+        }
+        else {
+            options.parentNode.appendChild(this.domNode);
+        }
+
+        if (options.skLoading) {
+            this.skLoading = true;
+        }
+
+        if (options.id) {
+            this.domNode.id = options.id;
+        }
+
+        if (options.name) {
+            this.domNode.name = options.name;
+        }
+    }
+
+    // Extended on for bind it with dom event
+    on(event, handler, data, one) {
+
+        const emitter = MegaDataEmitter.getEmitter(event, this);
+        const existEvent = !!emitter.events[emitter.event];
+
+        super.on(event, handler, data, one);
+
+        // This is existing event no need to go further.
+        if (existEvent) {
+            return this;
+        }
+
+        // Check this is custom event
+        const customEvent = MegaComponent.customEvents[emitter.event];
+
+        // If it is custom event in list and not registered prepare custom event by adding related native handlers.
+        if (customEvent && !this.rCE.includes(emitter.event)) {
+
+            const nk = Object.keys(customEvent.natives);
+
+            for (let i = nk.length; i--;) {
+
+                const passiveOpt = customEvent.passive.includes(nk[i]) ? {passive: true} : undefined;
+
+                this.domNode.addEventListener(nk[i], customEvent.natives[nk[i]].bind(this), passiveOpt);
+            }
+
+            this.rCE.push(emitter.event);
+        }
+
+        this.domNode.addEventListener(emitter.event, this);
+
+        return this;
+    }
+
+    // Extended off for remove dom event
+    off(event, handler) {
+
+        super.off(event, handler);
+
+        if (event instanceof MegaDataEvent) {
+            return this;
+        }
+
+        const emitter = MegaDataEmitter.getEmitter(event, this);
+
+        if (!emitter.events[emitter.event]) {
+            this.domNode.removeEventListener(emitter.event, this);
+        }
+
+        return this;
+    }
+
+    set domNode(n) {
+
+        Object.defineProperty(this, 'domNode', {
+            value: n,
+            writable: false
+        });
+    }
+
+    set parentNode(n) {
+
+        Object.defineProperty(this, 'parentNode', {
+            value: n,
+            writable: false
+        });
+    }
+
+    handleEvent(event) {
+        this.trigger(event);
+    }
+
+    // Util methods
+
+    addClass(...classes) {
+        this.domNode.classList.add(...classes);
+        return this;
+    }
+
+    removeClass(...classes) {
+        this.domNode.classList.remove(...classes);
+        return this;
+    }
+
+    hasClass(sel) {
+        return this.domNode.classList.contains(sel);
+    }
+
+    toggleClass(...classes) {
+
+        let state;
+        let res;
+
+        if (typeof classes[classes.length - 1] === 'boolean') {
+            state = classes.pop();
+        }
+
+        classes.forEach(cls => {
+            res = this.domNode.classList.toggle(cls, state);
+        });
+
+        if (classes.length === 1) {
+            return res;
+        }
+
+        return this;
+    }
+
+    get visible() {
+        return !this.domNode.classList.contains('hidden');
+    }
+
+    show() {
+        this.removeClass('hidden');
+    }
+
+    hide() {
+        this.addClass('hidden');
+    }
+
+    get skLoading() {
+        return this.domNode.classList.contains('sk-loading');
+    }
+
+    set skLoading(stateBool) {
+        if (this.skLoading === stateBool) {
+            return;
+        }
+
+        if (stateBool) {
+            this.domNode.classList.add('sk-loading');
+        }
+        else {
+            this.domNode.classList.remove('sk-loading');
+        }
+    }
+
+    destroy() {
+
+        if (typeof this[MegaDataEmitter.expando] === 'object') {
+
+            // Kill all emittor events
+            const ekeys = Object.keys(this[MegaDataEmitter.expando]);
+
+            for (let i = ekeys.length; i--;) {
+                this.off(ekeys[i]);
+            }
+        }
+
+        // Remove dom node
+        this.domNode.remove();
+    }
+
+    // Helper getter for debugging to give all binded events for the component and show where listener locates
+    get events() {
+
+        if (typeof this[MegaDataEmitter.expando] === 'object') {
+
+            const res = {};
+
+            // Gather all events
+            const ekeys = Object.keys(this[MegaDataEmitter.expando]);
+
+            for (let i = ekeys.length; i--;) {
+
+                if (this[MegaDataEmitter.expando][ekeys[i]].length === 1) {
+                    res[ekeys[i]] = this[MegaDataEmitter.expando][ekeys[i]][0].handler;
+                }
+                else {
+                    res[ekeys[i]] = this[MegaDataEmitter.expando][ekeys[i]].map(event => event.handler);
+                }
+            }
+
+            return res;
+        }
+
+        return null;
+    }
+}
+
+// Custom events list, this is used to prepare required native event for custom event and also bind element with it
+MegaComponent.customEvents = Object.create(null);
+
+// Tap event
+lazy(MegaComponent.customEvents, 'tap', () => {
+
+    'use strict';
+
+    return {
+        natives: {
+            touchmove: function() {
+                this.__touchMoved = true;
+            },
+            touchend: function(event) {
+
+                if (this.__touchMoved) {
+                    delete this.__touchMoved;
+                }
+                else {
+                    const custEvent = new CustomEvent('tap', event);
+
+                    Object.defineProperty(custEvent, 'target', {value: event.target});
+                    Object.defineProperty(custEvent, 'currentTarget', {value: event.currentTarget});
+                    Object.defineProperty(custEvent, 'srcElement', {value: event.srcElement});
+
+                    const res = this.trigger(custEvent);
+
+                    // This requires to stop event bubble for original event
+                    if (res === false) {
+                        event.stopPropagation();
+                        event.preventDefault();
+                    }
+                }
+            },
+            click: function(event) {
+                // Only allow anchor links on another component to able to do click for take the user to a linked page
+                if (this.domNode === event.target || event.target.tagName !== 'A') {
+                    event.preventDefault();
+                }
+            }
+        },
+        passive: ['touchmove']
+    };
+});
+
+// Extended verions of native document.querySelector to select component instead
+document.componentSelector = HTMLElement.prototype.componentSelector = function(sel) {
+    'use strict';
+
+    const elm = this.querySelector(sel);
+
+    if (elm && elm.component) {
+        return elm.component;
+    }
+
+    return null;
+};
+
+document.componentSelectorAll = HTMLElement.prototype.componentSelectorAll = function(sel) {
+    'use strict';
+
+    const res = [];
+
+    this.querySelectorAll(sel).forEach(elm => elm.component && res.push(elm.component));
+
+    return res;
+};
+
+class MegaInteractable extends MegaComponent {
+
+    constructor(options) {
+        super(options);
+
+        this.domNode.classList.add('nav-elem');
+        this.interactableType = options.type;
+
+        if (options.icon) {
+
+            this.icon = options.icon;
+
+            if (options.iconSize) {
+                this.iconSize = options.iconSize;
+
+                if (!this.iconSize) {
+                    return;
+                }
+            }
+        }
+
+        if (options.text && options.type !== 'icon') {
+
+            this.text = options.text;
+
+            if (options.subtext) {
+                this.subtext = options.subtext;
+            }
+        }
+
+        if (options.rightIcon && options.type === 'fullwidth') {
+
+            this.rightIcon = options.rightIcon;
+
+            if (options.rightIconSize) {
+
+                this.rightIconSize = options.rightIconSize;
+
+                if (!this.rightIconSize) {
+                    return;
+                }
+            }
+        }
+
+        // Disable and enable the interactable
+        this.disabled = options.disabled;
+
+        if (options.loaderColor) {
+            this.loaderColor = options.loaderColor;
+        }
+
+        if (options.onClick) {
+            this.on('click', options.onClick);
+        }
+
+        if (options.onContextmenu) {
+            this.on('contextmenu', options.onContextmenu);
+        }
+
+        if (options.dataset) {
+            this.dataset = options.dataset;
+        }
+
+        if (options.simpletip) {
+            this.dataset.simpletip = options.simpletip;
+            this.addClass('simpletip');
+        }
+
+        if (options.eventLog) {
+            this.eventLog = options.eventLog;
+            this.on('click.eventLog', () => eventlog(options.eventLog));
+        }
+    }
+
+    get disabled() {
+        return this.domNode.classList.contains('disabled');
+    }
+
+    set disabled(value) {
+        // Add/Remove the disabled style
+        if (value) {
+            this.domNode.classList.add('disabled');
+        }
+        else {
+            this.domNode.classList.remove('disabled');
+        }
+    }
+
+    get loading() {
+        return this.domNode.classList.contains('loading');
+    }
+
+    set loading(stateBool) {
+        if (this.loading === !!stateBool) {
+            return;
+        }
+
+        const sprite = this.loaderColor === 'w' ? 'uni' : 'theme';
+
+        if (stateBool) {
+            this.addClass('loading', `sprite-fm-${sprite}-after`, 'icon-loader-throbber-light-outline-after');
+        }
+        else {
+            this.removeClass(
+                'loading',
+                'sprite-fm-theme-after',
+                'sprite-fm-uni-after',
+                'icon-loader-throbber-light-outline-after'
+            );
+        }
+    }
+
+    get interactableType() {
+        return Object.values(MegaInteractable.interactableTypes).find(cls => this.domNode.classList.contains(cls));
+    }
+
+    set interactableType(type) {
+        this.removeClass(...Object.values(MegaInteractable.interactableTypes));
+        this.addClass(MegaInteractable.interactableTypes[type] || 'normal');
+    }
+
+    get icon() {
+        return this.domNode.icon.c;
+    }
+
+    set icon(iconClass) {
+
+        let elm = this.domNode.querySelector('.left-icon');
+
+        if (!elm) {
+
+            elm = document.createElement('i');
+
+            this.domNode.appendChild(elm);
+            this.domNode.icon = {};
+        }
+
+        elm.className = `${iconClass} left-icon`;
+        this.domNode.icon.c = iconClass;
+
+        if (this.iconSize) {
+            elm.classList.add(MegaInteractable.iconSizesClass[this.iconSize]);
+        }
+    }
+
+    get iconSize() {
+        return this.domNode.icon.s;
+    }
+
+    set iconSize(size) {
+
+        if (!this.icon) {
+
+            console.error('Icon not found');
+
+            return;
+        }
+
+        const sizeClass = MegaInteractable.iconSizesClass[size];
+
+        if (!sizeClass) {
+
+            console.error(`Icon size is not valid, valid sizes are:
+                ${Object.keys(MegaInteractable.iconSizesClass).toString()}`);
+
+            return;
+        }
+
+        this.domNode.icon.s = size;
+
+        const elm = this.domNode.querySelector('.left-icon');
+
+        if (elm) {
+            elm.classList.remove(MegaInteractable.iconSizesClass[this.domNode.icon.s]);
+            elm.classList.add(sizeClass);
+        }
+    }
+
+    get rightIcon() {
+        return this.domNode.rightIcon.c;
+    }
+
+    set rightIcon(iconClass) {
+
+        let elm = this.domNode.querySelector('.right-icon');
+
+        if (!elm) {
+
+            elm = document.createElement('i');
+
+            this.domNode.appendChild(elm);
+            this.domNode.rightIcon = {};
+        }
+
+        elm.className = `${iconClass} right-icon`;
+        this.domNode.rightIcon.c = iconClass;
+
+        if (this.rightIconSize) {
+            elm.classList.add(MegaInteractable.iconSizesClass[this.rightIconSize]);
+        }
+    }
+
+    get rightIconSize() {
+        return this.domNode.rightIcon.s;
+    }
+
+    set rightIconSize(size) {
+
+        if (!this.rightIcon) {
+
+            console.error('Icon not found');
+
+            return;
+        }
+
+        const sizeClass = MegaInteractable.iconSizesClass[size];
+
+        if (!sizeClass) {
+
+            console.error(`Icon size is not valid, valid sizes are:
+                ${Object.keys(MegaInteractable.iconSizesClass).toString()}`);
+
+            return;
+        }
+
+        if (this.domNode.rightIcon.s === size) {
+            return;
+        }
+
+        const elm = this.domNode.querySelector('.right-icon');
+
+        if (elm) {
+            elm.classList.remove(MegaInteractable.iconSizesClass[this.domNode.rightIcon.s]);
+            elm.classList.add(sizeClass);
+        }
+
+        this.domNode.rightIcon.s = size;
+    }
+
+    get text() {
+
+        const elm = this.domNode.querySelector('.primary-text');
+
+        return elm && elm.textContent;
+    }
+
+    set text(content) {
+
+        let elm = this.domNode.querySelector('.primary-text');
+
+        if (!elm) {
+
+            const wrapper = document.createElement("div");
+
+            wrapper.className = 'text-box-wrapper sk-elm';
+            this.domNode.appendChild(wrapper);
+
+            elm = document.createElement('span');
+            elm.classList.add('primary-text');
+            wrapper.appendChild(elm);
+        }
+
+        elm.textContent = content;
+    }
+
+    get subtext() {
+
+        const elm = this.domNode.querySelector('.sub-text');
+
+        return elm && elm.textContent;
+    }
+
+    set subtext(content) {
+
+        // Subtext can only exist if there is primary text
+        if (!this.text) {
+            return;
+        }
+
+        const wrapper = this.domNode.querySelector('.text-box-wrapper');
+
+        wrapper.classList.add('multi-text-box');
+
+        let elm = wrapper.querySelector('.sub-text');
+
+        /* Create a enclosing div if there is subtext */
+        if (content) {
+
+            if (!elm) {
+                elm = document.createElement('span');
+                elm.classList.add('sub-text');
+                wrapper.appendChild(elm);
+            }
+
+            elm.textContent = content;
+        }
+        else if (elm) {
+            elm.remove();
+        }
+    }
+
+    get active() {
+        return this.domNode.classList.contains('active');
+    }
+
+    set active(active) {
+        if (active) {
+            this.domNode.classList.add('active');
+        }
+        else {
+            this.domNode.classList.remove('active');
+        }
+    }
+
+    get dataset() {
+        return this.domNode.dataset;
+    }
+
+    set dataset(data) {
+        Object.assign(this.domNode.dataset, data);
+    }
+}
+
+MegaInteractable.interactableTypes = Object.freeze({
+    normal: 'normal',
+    fullwidth: 'full-width',
+    icon: 'icon-only',
+    text: 'text-only'
+});
+
+MegaInteractable.iconSizesClass = Object.freeze({
+    8: 'icon-size-8',
+    16: 'icon-size-16',
+    20: 'icon-size-20',
+    22: 'icon-size-22',
+    24: 'icon-size-24',
+    28: 'icon-size-28',
+    32: 'icon-size-32',
+    48: 'icon-size-48',
+    80: 'icon-size-80'
+});
+
+class MegaLink extends MegaInteractable {
+
+    constructor(options) {
+
+        options.nodeType = 'a';
+        super(options);
+
+        const targetNode = this.domNode;
+
+        targetNode.classList.add('link');
+
+        this.href = options.href || false;
+        this.target = options.target || false;
+    }
+
+    set target(target) {
+        if (!target) {
+            this.domNode.removeAttribute('target');
+            return;
+        }
+
+        this.domNode.target = target;
+        MegaLink.bindEvent.call(this);
+    }
+
+    get target() {
+        return this.domNode.target;
+    }
+
+    get href() {
+        // JS appends the current hostname/protocol to
+        // this.domNode.href, so we get the attr explicitly.
+        return this.domNode.getAttribute('href');
+    }
+
+    set href(url) {
+        if (!url) {
+            this.domNode.removeAttribute('href');
+            return;
+        }
+
+        this.domNode.href = url;
+        MegaLink.bindEvent.call(this);
+    }
+}
+
+MegaLink.bindEvent = function() {
+    'use strict';
+
+    this.native = !!this.target || /^(https?:\/\/)/i.test(this.href);
+
+    if (this.native) {
+        this.off('click');
+        if (this.eventLog) {
+            this.on('click.eventLog', () => eventlog(this.eventLog));
+        }
+        return;
+    }
+
+    this.on('click', async e => {
+        if (this.disabled
+            || is_mobile && mega.ui.viewerOverlay.confirmDiscard && !await mega.ui.viewerOverlay.confirmDiscard()) {
+            return false;
+        }
+
+        e.preventDefault();
+
+        if (window.textEditorVisible) {
+            mega.textEditorUI.doClose();
+        }
+
+        this.trigger('beforeRedirect');
+
+        if (isStaticPage(this.href)) {
+            return mega.redirect('mega.io', this.href, false, false, false);
+        }
+
+        /* Handle redirection internally */
+        if (!pfid && this.href.startsWith('/fm/')) {
+            M.openFolder(this.href.slice(4));
+        }
+        else if (pfcol && this.href.startsWith('/collection/')){
+            M.openFolder(this.href.slice(12));
+        }
+        else if (pfid && this.href.startsWith('/folder/')) {
+            M.openFolder(this.href.slice(8));
+        }
+        else {
+            loadSubPage(this.href);
+        }
+    });
+
+    this.on('auxclick', e => {
+
+        if (e.which === 2) {
+
+            if (isStaticPage(this.href)) {
+                mega.redirect('mega.io', this.href, false, false, false);
+            }
+
+            window.open(this.href, '_blank', 'noopener,noreferrer');
+
+            return false;
+        }
+    });
+};
+
+class MegaButton extends MegaInteractable {
+
+    constructor(options) {
+
+        options.nodeType = 'button';
+        super(options);
+
+        this.domNode.classList.add('button');
+
+        if (options.typeAttr) {
+            this.type = options.typeAttr;
+        }
+    }
+
+    get disabled() {
+        return super.disabled;
+    }
+
+    set disabled(value) {
+        // Call the disabled setter in MegaInteractable
+        super.disabled = value;
+
+        // Apply to the semantic element
+        this.domNode.disabled = value;
+    }
+
+    get type() {
+        return this.domNode.type;
+    }
+
+    set type(value) {
+        this.domNode.type = value;
+    }
+}
+
+class MegaCheckbox extends MegaComponent {
+
+    constructor(options) {
+
+        super(options);
+
+        if (!this.domNode) {
+            return;
+        }
+
+        this.domNode.classList.add(`align-${options.checkboxAlign}`);
+
+        let targetNode = this.domNode;
+        let subNode = document.createElement('div');
+        subNode.className = 'checkbox-wrapper';
+        targetNode.appendChild(subNode);
+
+        targetNode = subNode;
+        this.input = subNode = document.createElement('input');
+        subNode.type = 'checkbox';
+        subNode.name = options.checkboxName;
+        subNode.id = options.checkboxName;
+        targetNode.appendChild(subNode);
+
+        targetNode = this.domNode;
+        subNode = document.createElement('label');
+        subNode.className = 'checkbox-action';
+        subNode.htmlFor = options.checkboxName;
+        subNode.textContent = options.labelTitle;
+        targetNode.appendChild(subNode);
+
+        this.checked = options.checked;
+
+        this.on('click.checkbox', (ev) => {
+            if (ev.target === this.input) {
+                ev.stopPropagation();
+                this.onToggle();
+                return;
+            }
+            this.checked = !this.checked;
+            return false;
+        });
+    }
+
+    get checked() {
+        return this.input.checked;
+    }
+
+    set checked(checked) {
+        this.input.checked = checked;
+        this.onToggle();
+    }
+
+    get checkboxName() {
+        return this.input.name;
+    }
+
+    set checkboxName(name) {
+        this.input.name = name;
+    }
+
+    get labelTitle() {
+        const label = this.domNode.querySelector('label');
+        return label && label.textContent || '';
+    }
+
+    set labelTitle(name) {
+        const label = this.domNode.querySelector('label');
+        if (label) {
+            label.textContent = name;
+        }
+    }
+
+    onToggle() {
+        const checkboxWrapper = this.domNode.querySelector('.checkbox-wrapper');
+        const checkedClassList = [mega.ui.sprites.mono, 'icon-check-thin-outline'];
+        if (this.checked) {
+            checkboxWrapper.classList.add(...checkedClassList);
+        }
+        else {
+            checkboxWrapper.classList.remove(...checkedClassList);
+        }
+        this.trigger('toggle', this.checked);
+    }
+}
+
+/**
+ * Generates a Rack slot that can be used to rack any MegaComponent
+ * object within a MegaRack. Handles animations, positioning and timing the childComponent.
+ *
+ * NB: It's best to think of this class as a mixin, rather than a separate component class.
+ * We are adding "Rails" to a component that then allow it to exist in a MegaRack, not
+ * creating a separate component.
+ *
+ * @param {MegaComponent} childComponent The component to be wrapped in a slot.
+ *
+ * @returns {Object} Anonymous ES6 child class.
+ * @constructor
+ */
+function RackSlot(childComponent) {
+    'use strict';
+
+    return class extends childComponent {
+
+        /**
+         * Class slot constructor.
+         *
+         * @param {Object} options Instance options.
+         * @param {HTMLElement} options.parentNode Node to place the outer wrapperNode in.
+         */
+        constructor(options) {
+
+            super(options);
+
+            this.wrapperNode = mCreateElement('div', {'class': `rack-slot`}, [
+                mCreateElement('div', {'class': 'slot-inner'}, [
+                    this.domNode
+                ])
+            ]);
+
+            options.parentNode.append(this.wrapperNode);
+        }
+
+        /**
+         * Show the slot and inner object for a specified period.
+         *
+         * @param {Number} [timeout=4] The period to show for. 0 or -1 for infinite.
+         *
+         * @returns {Promise} Async completion.
+         */
+        async show(timeout = 4) {
+
+            // If this component is not yet "taken", take it
+            if (this.free) {
+                this.take();
+            }
+
+            this.wrapperNode.classList.remove('close');
+            this.wrapperNode.classList.remove('non-blocking');
+            if (typeof super.show === 'function') {
+                await super.show();
+            }
+
+            // The user handles the lifecycle
+            if (timeout <= 0) {
+                return;
+            }
+
+            /* Timeout Code */
+            const timeoutHash = this._sessionHash;
+
+            // Expiration after timeout
+            await tSleep(timeout);
+
+            // If we are still in the same session, run the timeout
+            if (this._sessionHash === timeoutHash) {
+                this.trigger('timeoutAction');
+                await this.hide();
+            }
+
+        }
+
+        /**
+         * Hide the slot and inner object. Call callback once hidden, or
+         * right away if sleep is false.
+         *
+         * @param {Boolean} [sleep=true] Whether to sleep before calling callback.
+         * @param {Boolean} [release=true] Whether to release the component after hiding
+         *
+         * @returns {Promise} Async completion.
+         */
+        async hide(sleep = true, release = true) {
+
+            this.wrapperNode.classList.add('close');
+
+            const timeoutHash = this._sessionHash;
+
+            await tSleep(sleep ? 1 : 0);
+
+            if (timeoutHash !== this._sessionHash) {
+                return;
+            }
+
+            if (typeof super.hide === 'function') {
+                await super.hide();
+            }
+
+            this.wrapperNode.classList.add('non-blocking');
+
+            // Release the component
+            if (!this.free && release) {
+                this.clear();
+
+                // Release control
+                this._sessionHash = undefined;
+            }
+        }
+
+        /**
+         * Get whether the current rackslot is hidden or not.
+         *
+         * @returns {Boolean} Whether the current rackslot is hidden
+         */
+        get visible() {
+
+            return !this.wrapperNode.classList.contains('close') && super.visible;
+        }
+
+        /**
+         * Clear the inner contents of the slot, by reseting common bindings, the timer
+         * and calling the interior clear function.
+         *
+         * @returns {undefined}
+         */
+        clear() {
+
+            // Reset user button bindings
+            this.off('timeoutAction');
+
+            if (typeof super.clear === 'function') {
+                super.clear();
+            }
+        }
+
+        /**
+         * Returns whether the slot is currently free/expired.
+         *
+         * @returns {boolean} Whether the slot is currently free.
+         */
+        get free() {
+
+            return !this._sessionHash;
+        }
+
+        /**
+         * Take exclusive control of a rackslot.
+         *
+         * @returns {undefined}
+         */
+        take() {
+
+            // Create a unique session hash.
+            this._sessionHash = Math.random().toString(36);
+        }
+
+    };
+}
+
+/**
+ * Generate a reusable rack of slots.
+ */
+class MegaRack extends MegaComponent {
+
+    /**
+     * Create a MegaRack
+     *
+     * @param {Object} options Instance options.
+     * @param {HTMLElement} options.parentNode Node to append too.
+     * @param {Object|Function} options.childComponent The child component that is passed to RackSlot().
+     * @param {Boolean} [options.prependRack=false] Whether to prepend to parentNode children.
+     * @param {Number} [options.maxSlots=5] The max number of slots on the screen at once.
+     * @param {Number} [options.defaultTimeout=4] The default timeout if undefined/null is passed to the rack show().
+     * @param {Number} [options.instanceOptions={}] Any additional arguments to pass when a new slot is created.
+     *
+     * @returns {MegaRack} The built object.
+     */
+    constructor(options) {
+
+        super(options);
+
+        // Move to top of list
+        if (options.prependRack) {
+            options.parentNode.prepend(this.domNode);
+        }
+
+        // Additional classes added with componentClassname
+        this.domNode.classList.add('rack');
+
+        if (options.childComponent) {
+            this.slotConstructor = RackSlot(options.childComponent);
+        }
+        else {
+            console.error("You must provide a `childComponent` for the rackSlot to rack.");
+        }
+
+        this.slotList = [];
+        this.maxSlots = options.maxSlots || 5;
+        this.defaultTimeout = options.defaultTimeout || 0;
+        this._instanceOptions = options.instanceOptions || {};
+        this._instanceOptions.parentNode = this.domNode;
+    }
+
+    /**
+     * Update an object with updateFunction, show the object and then hide it after timeout seconds.
+     *
+     * @param {Function} [updateFunction] The function to run to update the object before display.
+     * @param {Number} [timeout] The timeout in seconds to remove the object after, 0 is infinite.
+     *
+     * @returns {Object} The slot that is being updated/shown.
+     */
+    show(updateFunction, timeout = this.defaultTimeout) {
+        const slot = MegaRack.getSlot.call(this);
+
+        if (slot) {
+
+            if (typeof updateFunction === 'function') {
+                updateFunction.call(slot);
+            }
+
+            slot.show(timeout);
+
+            return slot;
+        }
+    }
+
+    /**
+     * Loop over and hide all slots.
+     *
+     * @returns {undefined}
+     */
+    hideSlots() {
+        let i = this.slotList.length;
+        while (i--) {
+            this.slotList[i].hide();
+        }
+
+        document.body.classList.remove('has-banner');
+    }
+}
+
+/**
+ * Static function uses this.slotConstructor to generate a new slot object.
+ * Must be called with `.call(this)`.
+ *
+ * @returns {Object} The new slot object.
+ */
+MegaRack.newSlot = function() {
+    'use strict';
+
+    const slot = new this.slotConstructor(this._instanceOptions);
+
+    this.slotList.push(slot);
+    slot.take();
+    return slot;
+};
+
+/**
+ * Static function finds and empty slot or returns a new slot if there are
+ * less than this.maxSlots.
+ * Must be called with `.call(this)`.
+ *
+ * @returns {Object|Boolean} Slot object on success, Boolean on failure.
+ */
+MegaRack.getSlot = function() {
+    'use strict';
+
+    let i = this.slotList.length;
+    let slot;
+
+    /* Iterate through toasts and find one where the timer has expired (free) */
+    while (i--) {
+        slot = this.slotList[i];
+        if (slot.free) {
+            this.domNode.appendChild(slot.wrapperNode);
+            slot.take();
+            return slot;
+        }
+    }
+
+    /* No free toasts found */
+    if (this.slotList.length >= this.maxSlots) {
+        if (d) {
+            console.warn("Too many slots");
+        }
+        return false;
+    }
+
+    return MegaRack.newSlot.call(this);
+};
+
+/**
+ * Create a re-usable toast object.
+ */
+class MegaToast extends MegaComponent {
+
+    /**
+     * The permanent toast object constructor.
+     *
+     * @param {Object} options The instance options.
+     * @param {Object} options.parentNode The parentnode to append the toast too.
+     */
+    constructor(options) {
+
+        super(options);
+
+        if (!this.domNode) {
+            return;
+        }
+
+        const targetNode = this.domNode;
+        let subNode;
+        targetNode.classList.add('toast-notification');
+
+        /* Message text */
+        subNode = document.createElement('span');
+        subNode.classList.add('message-body');
+        this.domNode.appendChild(subNode);
+        this.bodyNode = subNode;
+
+        /* Action button */
+        // We use text "b" to force the generation of the text elements.
+        subNode = new MegaButton({
+            parentNode: targetNode,
+            text: "b",
+            type: "normal",
+            componentClassname: "action-link toast"
+        });
+        /* Action button click event */
+        subNode.on('click', () => {
+
+            this.trigger('toastAction');
+            this.hide();
+
+        });
+        this.actionButton = subNode;
+        this.actionButtonText = "";
+
+        this.on('click.dismiss', () => {
+
+            this.trigger('dismissAction');
+            this.hide();
+
+        });
+    }
+
+    /**
+     * Clear the current toast message, action button text and actions.
+     *
+     * @returns void
+     */
+    clear() {
+        this.message = "";
+        this.actionButtonText = "";
+
+        /* Reset bindings */
+        this.off('toastAction');
+        this.off('dismissAction');
+    }
+
+    /**
+     * Show the current toast.
+     *
+     * @returns void
+     */
+    show() {
+        this.domNode.classList.remove('close');
+    }
+
+    /**
+     * Hide the current toast.
+     *
+     * @returns void
+     */
+    hide() {
+        this.domNode.classList.add('close');
+    }
+
+    /**
+     * Set the toast message to the provided value.
+     *
+     * @param {String} value The provided message value.
+     *
+     * @returns void
+     */
+    set message(value) {
+        this.bodyNode.textContent = "";
+
+        if (typeof value === 'string') {
+            value = document.createTextNode(value);
+        }
+
+        this.bodyNode.append(value);
+    }
+
+    /**
+     * Get the toast message text.
+     *
+     * @returns {String} The message text.
+     */
+    get message() {
+        return this.bodyNode.innerText;
+    }
+
+    /**
+     * Set the action/call to action button text.
+     *
+     * @param {String} [message=""] The new text.
+     *
+     * @returns void
+     */
+    set actionButtonText(message) {
+        message = message || '';
+        this.actionButton.text = message;
+        if (!message) {
+            this.actionButton.hide();
+            return;
+        }
+        this.actionButton.show();
+    }
+
+    /**
+     * Get the current action button text.
+     *
+     * @returns {String} Action button message text.
+     */
+    get actionButtonText() {
+        return this.actionButton.text;
+    }
+}
+
+mBroadcaster.once('boot_done', () => {
+    'use strict';
+
+    // Generate object methods for directly displaying toasts
+    mega.ui.toast = {
+        rack: new MegaRack({
+            parentNode: document.body,
+            componentClassname: 'toast disappear bottom',
+            defaultTimeout: 4,
+            childComponent: MegaToast
+        }),
+
+        /**
+         * Show a toast within the toastRack with the specified parameters
+         * for the specified callback.
+         *
+         * @param {string} message The message to display.
+         * @param {number} [timeout] The time until the toast expires and leaves the screen. 0 is infinite.
+         * @param {string} [actionButtonText] The text to place on the blue actionbutton.
+         * @param {object} [callbacks] Object containing various function callbacks.
+         * @param {function} [callbacks.actionButtonCallback] The callback to run when the actionbutton is called.
+         * @param {function} [callbacks.clickCallback] The callback to run when the toast is clicked to dismiss.
+         * @param {function} [callbacks.timeoutCallback] The callback to run when the toast times out.
+         *
+         * @returns {undefined}
+         */
+        show: function(message, timeout, actionButtonText,
+                       {actionButtonCallback, clickCallback, timeoutCallback} = {}) {
+
+            this.rack.show(function() {
+
+                this.message = message || '';
+                this.actionButtonText = actionButtonText || '';
+
+                if (typeof timeoutCallback === 'function') {
+
+                    this.on('timeoutAction', timeoutCallback);
+
+                }
+
+                if (typeof clickCallback === 'function') {
+
+                    this.on('dismissAction', clickCallback);
+
+                }
+
+                if (typeof actionButtonCallback === 'function') {
+
+                    this.on('toastAction', actionButtonCallback);
+
+                }
+            }, timeout);
+        },
+
+        /*
+        These exist for compatibility with current calls, and occupy a feature
+        subset.
+        NB: Position is a deprecated parameter.
+        */
+        legacy: {
+            /**
+             * Show a toast with the specified message and timeout.
+             *
+             * @param {string} message The message that the toast should display.
+             * @param {string} [position] Deprecated.
+             * @param {number} [timeout=4000] The time until the toast expires and leaves the screen. 0 is infinite.
+             *
+             * @returns {undefined}
+             */
+            show: function(message, position, timeout) {
+
+                mega.ui.toast.rack.show(function() {
+
+                    this.message = message;
+
+                }, timeout);
+            },
+        },
+    };
+
+    if (is_mobile) {
+        /*
+        These exist as aliases to support the current
+        implementations.
+        */
+        mobile.showToast = mobile.showSuccessToast = mobile.showErrorToast =
+            mega.ui.toast.legacy.show.bind(mega.ui.toast);
+    }
+});
+
+class MegaOverlay extends MegaComponent {
+
+    constructor(options) {
+
+        super(options);
+
+        if (!this.domNode) {
+            return;
+        }
+
+        this.addClass('custom-alpha', 'overlay-wrap');
+
+        let targetNode = this.domNode;
+        let subNode = document.createElement('div');
+        subNode.className = `${options.wrapperClassname} custom-alpha`;
+        targetNode.appendChild(subNode);
+        const overlay = this.overlayNode = subNode;
+
+        targetNode = overlay;
+
+        subNode = document.createElement('div');
+        subNode.className = 'header';
+        targetNode.appendChild(subNode);
+        targetNode = subNode;
+
+        this.headerTitleNode = subNode = document.createElement('div');
+        subNode.className = 'header-title';
+        targetNode.appendChild(subNode);
+
+        this.closeButton = new MegaButton({
+            parentNode: targetNode,
+            type: 'icon',
+            componentClassname: 'text-icon close',
+            icon: `${mega.ui.sprites.mono} icon-dialog-close`,
+            iconSize: 24
+        });
+
+        targetNode = overlay;
+
+        subNode = document.createElement('div');
+        subNode.className = 'main';
+        targetNode.appendChild(subNode);
+
+        if (!is_mobile) {
+            overlay.Ps = new PerfectScrollbar(options.scrollOverlay ? overlay : subNode);
+        }
+
+        targetNode = subNode;
+
+        this.imageNode = subNode = document.createElement('div');
+        subNode.className = 'image';
+        targetNode.appendChild(subNode);
+
+        this.titleNode = subNode = document.createElement('div');
+        subNode.className = 'title';
+        targetNode.appendChild(subNode);
+
+        this.subTitleNode = subNode = document.createElement('div');
+        subNode.className = 'subtitle';
+        targetNode.appendChild(subNode);
+
+        this.contentNode = subNode = document.createElement('div');
+        subNode.className = 'content fm-scrolling scroller-space content';
+        targetNode.appendChild(subNode);
+
+        targetNode = overlay;
+        this.actionsNode = subNode = document.createElement('div');
+        subNode.className = 'actions';
+        targetNode.appendChild(subNode);
+
+        targetNode = overlay;
+        this.footerNode = subNode = document.createElement('footer');
+        subNode.className = 'overlay-footer hidden';
+        targetNode.appendChild(subNode);
+    }
+
+    get centered() {
+        return !!this.domNode.querySelector('.main').classList.contains('centered');
+    }
+
+    set centered(val) {
+        val = val || true;
+        const main = this.domNode.querySelector('.main');
+
+        if (val !== this.centered) {
+            main.classList.toggle('centered');
+        }
+    }
+
+    get visible() {
+        return this.hasClass('active');
+    }
+
+    show(options) {
+        if (options) {
+            this.clear();
+            this.showClose = options.showClose;
+            this.centered = options.centered;
+
+            if (options.classList) {
+                this.addClass(...options.classList);
+            }
+
+            if (!options.name && d) {
+                console.warn('Overlay name is missing. Please set it in the options');
+            }
+
+            const _bindEvent = (onAction, target, event) => {
+
+                if (typeof onAction === 'function') {
+
+                    if (target && event) {
+                        target.on(event, onAction);
+                    }
+                    else {
+                        onAction();
+                    }
+                }
+            };
+
+            this.name = options.name || '';
+
+            if (options.navImage) {
+                this.addNavImage(options.navImage, true);
+            }
+
+            if (options.icon) {
+                this.addImage(options.icon);
+            }
+
+            if (options.header) {
+                this.addHeader(options.header, options.headerType);
+            }
+
+            if (options.title) {
+                this.addTitle(options.title, options.titleType);
+            }
+            if (options.subtitle) {
+                this.addSubTitle(options.subtitle);
+            }
+            this.addContents(options.contents || []);
+
+            _bindEvent(options.onRender);
+
+            if (options.actions) {
+                for (let i = options.actions.length; i--;) {
+                    const {
+                        type: type,
+                        text: text,
+                        className: className,
+                        onClick: onClick,
+                        icon
+                    } = options.actions[i];
+
+                    const button = new MegaButton({
+                        parentNode: this.actionsNode,
+                        type: type || 'normal',
+                        componentClassname: className || '',
+                        text,
+                        icon
+                    });
+
+                    _bindEvent(onClick, button, 'click.overlayAction');
+                }
+            }
+
+            if (options.footer) {
+                this.addFooter(options.footer);
+            }
+
+            _bindEvent(options.onClose, this, 'close.overlay');
+
+            if (options.actionOnBottom) {
+                this.domNode.classList.add('action-button-bottom');
+            }
+
+            _bindEvent(options.onShow);
+        }
+
+        this.closeButton.rebind('click.closeOverlay', async() => {
+            // If the overlay requires a confirmation action before closing it,
+            // wait for the user's response before trying to close the overlay
+            if (options && options.confirmClose) {
+                const closeOverlay = await options.confirmClose();
+                if (!closeOverlay) {
+                    return;
+                }
+            }
+
+            this.hide();
+            if (mega.ui.toast) {
+                mega.ui.toast.rack.removeClass('above-actions');
+            }
+            this.trigger('close');
+        });
+
+        this.addClass('active');
+
+        // if (mega.flags.ab_ads) {
+            mega.commercials.updateOverlays(undefined, true);
+        // }
+    }
+
+    hide(name) {
+        if (this.visible && (!name || name === this.name)) {
+            this.removeClass('active', 'pm-dialog');
+
+            mainlayout.classList.remove('fm-overlay', 'pm-dialog');
+            document.documentElement.classList.remove('overlayed');
+            this.name = undefined;
+            this.trigger('hide');
+
+            // if (mega.flags.ab_ads) {
+                mega.commercials.updateOverlays();
+            // }
+        }
+    }
+
+    clear() {
+        this.clearHeader();
+        this.clearTitle();
+        this.clearSubTitle();
+        this.clearImage();
+        this.clearContent();
+        this.clearActions();
+        this.clearFooter();
+        this.clearUserEvents();
+
+        this.removeClass('action-button-bottom');
+    }
+
+    // Methods for each of its elements
+
+    get showClose() {
+        return !this.domNode.querySelector('.close').classList.contains('hidden');
+    }
+
+    set showClose(show) {
+        const close = this.domNode.querySelector('.close');
+        if (show !== !close.classList.contains('hidden')) {
+            close.classList.toggle('hidden');
+        }
+    }
+
+    get name() {
+        return this.domNode.name;
+    }
+
+    set name(name) {
+        this.domNode.name = name;
+    }
+
+    addTitle(title, titleType) {
+        this.clearTitle();
+        const subNode = document.createElement(titleType || 'h1');
+        subNode.textContent = title;
+        this.titleNode.appendChild(subNode);
+    }
+
+    clearTitle() {
+        this.titleNode.textContent = '';
+        this.titleNode.className = 'title';
+    }
+
+    addHeader(title, headerType) {
+        this.clearHeader();
+        const subNode = document.createElement(headerType || 'h2');
+        subNode.textContent = title;
+        this.headerTitleNode.appendChild(subNode);
+    }
+
+    clearHeader() {
+        this.headerTitleNode.textContent = '';
+    }
+
+    addSubTitle(subtitle) {
+        this.clearSubTitle();
+        if (subtitle) {
+            const subNode = document.createElement('span');
+            subNode.textContent = subtitle;
+            this.subTitleNode.appendChild(subNode);
+        }
+    }
+
+    clearSubTitle() {
+        this.subTitleNode.textContent = '';
+    }
+
+    clearImage() {
+        this.imageNode.textContent = '';
+        this.imageNode.className = 'image';
+    }
+
+    addImage(imageClass, icon = true) {
+        const elem = document.createElement('i');
+        elem.className = icon ? `icon ${imageClass}` : imageClass;
+        this.imageNode.append(elem);
+    }
+
+    addNavImage(imageClass, icon = true) {
+        const elem = document.createElement('i');
+        elem.className = icon ? `icon ${imageClass}` : imageClass;
+        this.headerTitleNode.appendChild(elem);
+    }
+
+    addContent(content, clear) {
+        if (!content) {
+            return;
+        }
+        if (typeof content === 'string') {
+            content = document.createTextNode(content);
+        }
+
+        if (clear) {
+            this.clearContent();
+        }
+
+        this.contentNode.appendChild(content);
+
+        if (this.overlayNode.Ps) {
+            this.overlayNode.Ps.update();
+        }
+    }
+
+    addContents(contents, clear) {
+        if (clear) {
+            this.clearContent();
+        }
+        for (let i = 0; i < contents.length; i++) {
+            this.addContent(contents[i]);
+        }
+    }
+
+    clearContent() {
+        this.contentNode.textContent = '';
+        if (this.overlayNode.Ps) {
+            this.overlayNode.Ps.update();
+        }
+    }
+
+    addActions(actions, clear) {
+        if (clear) {
+            this.clearActions();
+        }
+
+        const res = [];
+
+        for (let i = 0; i < actions.length; i++) {
+
+            const interactable = actions.href ? MegaLink : MegaButton;
+            const buttonProps = {
+                ...actions[i],
+                parentNode: this.actionsNode,
+                componentClassname: `${actions[i].componentClassname || 'primary'} nav-elem normal button`
+            };
+
+            const btn = new interactable(buttonProps);
+
+            res.push(btn);
+        }
+
+        return res;
+    }
+
+    clearActions() {
+        this.actionsNode.textContent = '';
+        this.actionsNode.className = 'actions';
+    }
+
+    addFooter(options, clear) {
+        if (clear) {
+            this.clearFooter();
+        }
+        if (!['checkbox', 'link'].includes(options.type)) {
+            return;
+        }
+        const { type, classList = [] } = options;
+        if (type === 'checkbox') {
+            this.footerComp = new MegaCheckbox({
+                parentNode: this.footerNode,
+                componentClassname: 'mega-checkbox',
+                ...options,
+            });
+        }
+        else if (type === 'link') {
+            this.footerComp = new MegaLink({
+                parentNode: this.footerNode,
+                ...options,
+            });
+        }
+        this.footerNode.className = ['overlay-footer', ...classList].join(' ');
+        this.addClass('with-footer');
+    }
+
+    clearFooter() {
+        this.footerNode.className = 'overlay-footer hidden';
+        this.footerNode.textContent = '';
+        delete this.footerComp;
+        this.removeClass('with-footer');
+    }
+
+    // Other util methods
+
+    scrollTo(element) {
+        if (element) {
+            element.scrollIntoView();
+        }
+    }
+
+    clearUserEvents() {
+        this.off('close.overlay');
+    }
+}
+
+mega.ui.overlay = new MegaOverlay({
+    parentNode: document.body,
+    componentClassname: 'mega-overlay',
+    wrapperClassname: 'overlay'
+});
+
+window.addEventListener('popstate', () => {
+
+    'use strict';
+
+    if (mega.ui.overlay.visible) {
+        mega.ui.overlay.hide();
+    }
+});
+
+class MegaSheet extends MegaOverlay {
+
+    constructor(options) {
+        super(options);
+
+        this.rebind('click.closeSheet', (e) => {
+            if (e.target === this.domNode
+                // do not close sheet when an input element is focussed
+                && !this.domNode.querySelector('.mega-input.active')) {
+                if (this.preventBgClosing) {
+                    return false;
+                }
+                this.hide();
+                this.trigger('close');
+            }
+        });
+
+        const sheetElm = this.domNode.firstChild;
+
+        if (is_touchable) {
+            this.gesture = new MegaGesture({
+                domNode: this.domNode,
+                onTouchMove: ev => {
+
+                    const yDiff = this.gesture.yStart - ev.touches[0].clientY;
+
+                    sheetElm.style.transform = `translateY(${Math.max(0, -yDiff)}px)`;
+                },
+                onSwipeDown: () => {
+
+                    this.hide();
+                    this.trigger('close');
+                },
+                onTouchEnd: () => {
+                    sheetElm.style.transform = '';
+                },
+                scrollNodes: { y: this.domNode.querySelector('.fm-scrolling') }
+            });
+
+            // For dialog like sheet should move more to close
+            window.addEventListener('resize', () => {
+                this.gesture.minSwipeDistanceY = document.body.offsetWidth < 769 ? 250 / window.devicePixelRatio
+                    : document.body.offsetHeight / 4;
+            });
+        }
+    }
+
+    set type(key) {
+        const sheetType = MegaSheet.typeClass[key];
+
+        if (!sheetType) {
+            console.error('Sheet type is not given');
+            return;
+        }
+
+        this.domNode.megaSheetType = sheetType;
+        this.domNode.classList.add(sheetType);
+        // if (mega.flags.ab_ads) {
+            mega.commercials.updateOverlays(sheetType);
+        // }
+    }
+
+    get type() {
+        return this.domNode.megaSheetType;
+    }
+
+    set height(key) {
+        const sheetHeight = MegaSheet.heightClass[key];
+
+        if (!sheetHeight) {
+            console.error('Sheet height mode is not given');
+            return;
+        }
+
+        this.domNode.megaSheetHeight = sheetHeight;
+        this.domNode.classList.add(sheetHeight);
+    }
+
+    get height() {
+        return this.domNode.megaSheetHeight;
+    }
+
+    /**
+     * Method to open a sheet with data if passed as a param
+     * @param {Object} [options] contains optional fields to set data
+     * @example
+     *  mega.ui.sheet.show({
+     *      name: 'sheet-loader',
+     *      type: 'modal',
+     *      showClose: true,
+     *      preventBgClosing: false,
+     *      icon: 'sprite-mobile-fm-theme icon-loader-throbber-thin-outline loading',
+     *      title: 'Moving folder to Rubbish bin...',
+     *      content: 'This can take a while.',
+     *      actions: [{
+     *          type: 'normal',
+     *          text: 'Okay',
+     *          className: '',
+     *          onClick: 'function'
+     *      }],
+    *       onShow: 'function',
+     *      onClose: 'function'
+     *  });
+     * @returns {void}
+     */
+    show(options) {
+        if (options) {
+            if (!options.name) {
+                console.error('Sheet name is missing in the options');
+                return;
+            }
+
+            M.safeShowDialog(options.name, () => {
+                super.show(options);
+                this.type = options.type || 'normal';
+                this.height = options.sheetHeight || 'auto';
+                this.preventBgClosing = options.preventBgClosing || false;
+            });
+        }
+        else {
+            if (!this.type) {
+                this.type = 'normal';
+            }
+            if (!this.height) {
+                this.height = 'auto';
+            }
+            this.preventBgClosing = this.preventBgClosing || false;
+
+            super.show();
+        }
+
+        if (mega.ui.overlay.visible) {
+            mega.ui.overlay.domNode.classList.add('arrange-to-back');
+        }
+
+        mainlayout.classList.add('fm-overlay');
+        document.documentElement.classList.add('overlayed');
+        tryCatch(() => document.activeElement.blur())();
+    }
+
+    hide() {
+        super.hide();
+        mega.ui.overlay.domNode.classList.remove('arrange-to-back');
+
+        if ($.msgDialog) {
+            closeMsg();
+        }
+        else if ($.dialog) {
+            closeDialog();
+        }
+    }
+
+    clear() {
+        this.domNode.classList.remove(this.type, this.height);
+        delete this.domNode.megaSheetType;
+        delete this.domNode.megaSheetHeight;
+
+        super.clear();
+    }
+
+    /**
+     * Overridden function
+     * @param {string|HTMLElement} title
+     *
+     * @returns {void}
+     */
+    addTitle(title) {
+        this.clearTitle();
+        let subNode = title;
+
+        if (typeof subNode === 'string') {
+            subNode = document.createElement('h2');
+            subNode.textContent = title;
+        }
+
+        this.titleNode.appendChild(subNode);
+    }
+}
+
+MegaSheet.typeClass = {
+    normal: 'normal',
+    modal: 'modal-dialog',
+    modalLeft: 'modal-dialog-left'
+};
+
+MegaSheet.heightClass = {
+    full: 'full-height',
+    auto: 'dynamic-height'
+};
+
+// Create instance before fm is initialized
+mega.ui.sheet = new MegaSheet({
+    parentNode: document.body,
+    componentClassname: 'mega-sheet',
+    wrapperClassname: 'sheet'
+});
+
+window.addEventListener('popstate', () => {
+
+    'use strict';
+
+    if (mega.ui.sheet.visible) {
+        mega.ui.sheet.hide();
+    }
+});
+
+class MegaMobileHeader extends MegaComponent {
+
+    constructor(options) {
+
+        super(options);
+
+        // Build: Top Block
+
+        let targetNode = this.domNode;
+        this.topBlock = document.createElement('div');
+        this.topBlock.className = 'block top-block';
+        targetNode.appendChild(this.topBlock);
+
+        this.bannerHolder = document.createElement('div');
+        this.bannerHolder.className = 'block banner-block';
+        targetNode.appendChild(this.bannerHolder);
+
+        targetNode = this.topBlock;
+        let subNode = document.createElement('div');
+        subNode.className = 'nav-navigation';
+        targetNode.appendChild(subNode);
+
+        const megaLink = new MegaLink({
+            parentNode: subNode,
+            type: 'icon',
+            componentClassname: 'text-icon home',
+            icon: 'sprite-fm-illustration-wide img-mega-logo',
+            iconSize: 24
+        });
+        megaLink.on('tap.home', () => {
+            loadSubPage(u_attr ? 'fm' : 'start');
+
+            if (mega.ui.topmenu.visible) {
+                mega.ui.topmenu.hide();
+            }
+        });
+
+        const actionsNode = document.createElement('div');
+        actionsNode.className = 'nav-actions';
+        targetNode.appendChild(actionsNode);
+
+        this.avatarButtonType = options.avatarButtonType || MegaLink;
+
+        if (u_attr) {
+            this.renderLoggedIn();
+        }
+        else {
+            const loginLink = new MegaLink({
+                parentNode: actionsNode,
+                text: l.log_in,
+                type: "normal",
+                componentClassname: "action-link login-button"
+            });
+
+            loginLink.on('tap', () => {
+
+                login_next = getCleanSitePath();
+                loadSubPage('login');
+            });
+
+            mBroadcaster.once('login2', () => {
+                this.renderLoggedIn(loginLink);
+            });
+        }
+
+        const menuButton = new MegaButton({
+            parentNode: actionsNode,
+            type: 'icon',
+            componentClassname: 'text-icon menu',
+            icon: 'sprite-mobile-fm-mono icon-menu-thin-outline',
+            iconSize: 24
+        });
+
+        menuButton.on('tap.list', () => {
+            if (!mega.ui.topmenu.visible) {
+                mega.ui.topmenu.show();
+            }
+        });
+
+        // Search bar will come in version 2
+        /* const searchButton = new MegaButton({
+            parentNode: actionsNode,
+            type: 'icon',
+            componentClassname: 'text-icon search',
+            icon: 'sprite-mobile-fm-mono icon-search-thin-outline',
+            iconSize: 24
+        });
+        searchButton.on('tap.search', () => {
+            if (!this.visibleSearchWrapper) {
+                this.showSearchWrapper();
+            }
+        }); */
+
+        // Search bar will come in version 2
+        // MegaMobileHeader.buildSearch.call(this, topBlock);
+
+        // Build: Bottom Block
+
+        targetNode = this.domNode;
+        subNode = document.createElement('div');
+        subNode.className = 'bottom-block hidden';
+        targetNode.appendChild(subNode);
+        this.bottomBlock = subNode;
+
+        subNode = document.createElement('div');
+        subNode.className = 'block';
+        this.bottomBlock.appendChild(subNode);
+
+        targetNode = subNode;
+        subNode = document.createElement('div');
+        subNode.className = 'nav-navigation';
+        targetNode.appendChild(subNode);
+
+        const backLink = new MegaLink({
+            parentNode: subNode,
+            type: 'icon',
+            componentClassname: 'text-icon back',
+            icon: 'sprite-mobile-fm-mono icon-arrow-left-thin-outline',
+            iconSize: 24
+        });
+
+        backLink.on('tap.back', () => {
+
+            if (!M.currentdirid || M.currentrootid === 'out-shares' || M.currentrootid === 'public-links'
+                    || M.currentdirid.startsWith('account/') || M.currentdirid.startsWith('refer')) {
+
+                if (typeof mobile.settingsHelper.currentPage !== 'undefined'){
+                    mobile.settingsHelper.currentPage.hide();
+
+                    if (String(M.currentdirid).split('/').pop() === 'verify') {
+                        return loadSubPage('fm/account');
+                    }
+
+                    if (typeof mobile.settingsHelper.currentPage.back === 'function') {
+                        return mobile.settingsHelper.currentPage.back();
+                    }
+                }
+
+                // @todo: Refactor back button logic. `history.back` is incorrect here
+                if (M.currentdirid === 'account/security'
+                    || M.currentdirid === 'account/notifications'
+                    || M.currentdirid === 'account/file-management') {
+                    return loadSubPage('fm/account/settings');
+                }
+                if (M.currentdirid === 'account/settings') {
+                    return loadSubPage('fm');
+                }
+
+                history.back();
+            }
+            else {
+                M.openFolder(M.getNodeParent(M.currentdirid));
+            }
+        });
+
+        subNode = document.createElement('div');
+        subNode.className = 'nav-actions';
+        targetNode.appendChild(subNode);
+
+        // Rubbish bin icon is visible only on the Rubbish bin page
+        const binIcon = new MegaButton({
+            parentNode: subNode,
+            type: 'icon',
+            componentClassname: 'text-icon clear-bin hidden',
+            icon: 'sprite-mobile-fm-mono icon-trash-thin-outline',
+            iconSize: 24
+        });
+
+        binIcon.on('tap.delete', () => {
+            const actionsButton = [
+                {
+                    type: 'normal',
+                    text: l[1018],
+                    className: '',
+                    onClick: mobile.rubbishBin.emptyRubbishBin
+                }
+            ];
+
+            mega.ui.sheet.show({
+                'name': 'empty-bin',
+                'type': 'modal',
+                'title': l.empty_rubbish_bin,
+                'icon': 'sprite-mobile-fm-mono icon-trash-thin-outline clear-bin',
+                'showClose': true,
+                'contents': [l.empty_rubbish_bin_info],
+                'actions': actionsButton
+            });
+        });
+
+        const createFolderButton = new MegaButton({
+            parentNode: subNode,
+            type: 'icon',
+            componentClassname: 'text-icon create-folder',
+            icon: 'sprite-mobile-fm-mono icon-folder-plus-thin-outline',
+            iconSize: 24
+        });
+        createFolderButton.on('tap.createFolder', () => {
+
+            if (!validateUserAction()) {
+                return false;
+            }
+
+            if (!mobile.createFolder) {
+                mobile.createFolder = new MobileNodeNameControl({type: 'create'});
+            }
+
+            // Show the create folder overlay
+            mobile.createFolder.show();
+        });
+
+        const title = document.createElement('h1');
+        title.className = 'heading';
+        targetNode.appendChild(title);
+
+        if (!pfcol) {
+            const filterButton = new MegaButton({
+                parentNode: subNode,
+                type: 'icon',
+                componentClassname: 'text-icon filter',
+                icon: 'sprite-mobile-fm-mono icon-filter-thin-outline',
+                iconSize: 24
+            });
+            filterButton.on('tap.filter', () => {
+                MegaMobileHeader.showFilters.call(this);
+            });
+
+            this.closeButton = new MegaButton({
+                parentNode: subNode,
+                type: 'icon',
+                componentClassname: 'text-icon close',
+                icon: 'sprite-mobile-fm-mono icon-dialog-close',
+                iconSize: 24
+            });
+        }
+
+        const _throttledUpdate = SoonFc(100, this.update.bind(this));
+
+        mBroadcaster.addListener('mega:openfolder', _throttledUpdate);
+        mBroadcaster.addListener('pagechange', _throttledUpdate);
+        window.addEventListener('resize', this.resetBottomBlock.bind(this));
+    }
+
+    // Options: setter
+
+    set headerOptions(types) {
+        for (var key in types) {
+            if (types.hasOwnProperty(key)) {
+                var value = types[key];
+                const elements = this.domNode.getElementsByClassName(key);
+
+                for (i = elements.length; i--;) {
+
+                    const element = elements[i];
+
+                    if (typeof value === 'string') {
+                        element.textContent = value;
+                    }
+
+                    element.classList.remove('hidden', 'mobile-hide-phone', 'mobile-hide-tablet');
+
+                    if (value) {
+                        if (value.hidePhone) {
+                            element.classList.add('mobile-hide-phone');
+                        }
+                        if (value.hideTablet) {
+                            element.classList.add('mobile-hide-tablet');
+                        }
+                    }
+                    else {
+                        element.classList.add('hidden');
+                    }
+
+                    if (element === this.bottomBlock) {
+                        this.resetBottomBlock();
+                    }
+                }
+            }
+        }
+    }
+
+    // Search: visibility methods
+
+    get visibleSearchWrapper() {
+        const searchWrapper = this.domNode.querySelector('.search-wrapper');
+        if (searchWrapper) {
+            return window.getComputedStyle(searchWrapper).visibility === 'visible';
+        }
+        return false;
+    }
+
+    showSearchWrapper() {
+        const searchWrapper = this.domNode.querySelector('.search-wrapper');
+        if (searchWrapper) {
+            searchWrapper.classList.add('visible');
+        }
+    }
+
+    hideSearchWrapper() {
+        const searchWrapper = this.domNode.querySelector('.search-wrapper');
+        if (searchWrapper) {
+            searchWrapper.classList.remove('visible');
+        }
+    }
+
+    showBottomBlock() {
+
+        if (this.bottomBlock.style.height !== `${this.bottomBlock.originalHeight}px`) {
+            this.bottomBlock.style.height = `${this.bottomBlock.originalHeight}px`;
+        }
+    }
+
+    hideBottomBlock() {
+
+        if (this.bottomBlock.style.height !== `0px`) {
+            this.bottomBlock.style.height = `0px`;
+        }
+    }
+
+    update() {
+        const noTabletView = isPublicLink() || page === 'keybackup' || page.startsWith('businesssignup');
+
+        const _hide = () => {
+
+            mainlayout.classList.add('no-tablet-layout');
+            this.hide();
+        };
+
+        if (is_fm() || noTabletView || page === 'support') {
+
+            mainlayout.classList[noTabletView ? 'add' : 'remove']('no-tablet-layout');
+
+            const type = MegaMobileHeader.getType();
+
+            if (type['bottom-block']) {
+                type.heading = MegaMobileHeader.getHeading();
+            }
+
+            this.headerOptions = type;
+
+            this.show();
+        }
+        else {
+            _hide();
+        }
+    }
+
+    resetBottomBlock() {
+
+        this.bottomBlock.removeAttribute('style');
+
+        onIdle(() => {
+            this.bottomBlock.originalHeight = this.bottomBlock.offsetHeight;
+            this.showBottomBlock();
+        });
+    }
+
+    renderLoggedIn(replace) {
+
+        const actionsNode = this.domNode.querySelector('.top-block .nav-actions');
+
+        this.avatarButton = new this.avatarButtonType({
+            parentNode: actionsNode,
+            type: 'normal',
+            componentClassname: 'avatar'
+        });
+
+        useravatar.loadAvatar(u_handle).finally(() => {
+
+            const avatarMeta = generateAvatarMeta(u_handle);
+
+            const shortNameEl = mCreateElement('span');
+            shortNameEl.textContent = avatarMeta.shortName;
+
+            const avatar = mCreateElement('div', {class: `${u_handle} avatar-wrapper`}, [
+                avatarMeta.avatarUrl ? mCreateElement('img', {src: avatarMeta.avatarUrl})
+                    : mCreateElement(
+                        'div',
+                        {class: `color${avatarMeta.color} avatar-wrapper ${u_handle} small-rounded-avatar`},
+                        [shortNameEl]
+                    )
+            ]);
+
+            this.avatarButton.domNode.appendChild(avatar);
+
+            this.avatarButton.on('tap.account', () => {
+
+                if (!is_fm() || pfid) {
+                    return mobile.settings.account.init();
+                }
+
+                loadSubPage('fm/account');
+
+                if (mega.ui.topmenu.visible) {
+                    mega.ui.topmenu.hide();
+                }
+            });
+        });
+
+        if (replace) {
+
+            replace.domNode.replaceWith(this.avatarButton.domNode);
+            replace.destroy();
+        }
+    }
+
+    static init(update) {
+        MegaMobileTopMenu.init();
+
+        if (!mega.ui.header) {
+            mega.ui.header = new MegaMobileHeader({
+                parentNode: mainlayout,
+                componentClassname: 'mega-header',
+                prepend: true
+            });
+        }
+
+        if (update) {
+            mega.ui.header.update();
+        }
+    }
+
+    static buildSearch(parent) {
+        const searchWrapper = document.createElement('div');
+        searchWrapper.className = 'search-wrapper';
+        parent.appendChild(searchWrapper);
+
+        const closeSearchButton = new MegaButton({
+            parentNode: searchWrapper,
+            type: 'icon',
+            componentClassname: 'text-icon js-btncloseSearch',
+            icon: 'sprite-mobile-fm-mono icon-arrow-left-thin-outline',
+            iconSize: 24
+        });
+        closeSearchButton.on('tap.closeSearch', () => {
+            this.hideSearchWrapper();
+        });
+
+        const searchForm = document.createElement('form');
+        searchForm.className = 'search-box';
+        searchForm.id = 'main-search-mobile-form';
+        searchWrapper.appendChild(searchForm);
+
+        let subNode = document.createElement('i');
+        subNode.className = 'sprite-mobile-fm-mono icon-search-thin-outline';
+        searchForm.append(subNode);
+
+        subNode = document.createElement('input');
+        subNode.type = 'text';
+        subNode.placeholder = l[102];
+        subNode.className = 'search-input js-filesearcher';
+        searchForm.appendChild(subNode);
+
+        const clearSearchButton = new MegaButton({
+            parentNode: searchForm,
+            type: 'icon',
+            componentClassname: 'text-icon js-btnclearSearch hidden',
+            icon: 'sprite-mobile-fm-mono icon-close-component',
+            iconSize: 16
+        });
+        clearSearchButton.domNode.type = 'button';
+    }
+
+    static showFilters() {
+        M.safeShowDialog('mobile-header-filters', () => {
+            mega.ui.sheet.clear();
+
+            mega.ui.sheet.showClose = true;
+            let targetNode, subNode, viewGroup;
+
+            // show view options if the page is not a shared items page
+            if (!['shares','out-shares','public-links'].includes(M.currentdirid)) {
+                targetNode = document.createElement('div');
+                targetNode.className = 'filter';
+                subNode = document.createElement('h3');
+                subNode.textContent = l.filter_view;
+                targetNode.appendChild(subNode);
+
+                const views = [
+                    {
+                        parentNode: targetNode,
+                        label: l.filter_view_list,
+                        value: 'list',
+                        checked: M.viewmode === 0
+                    },
+                    {
+                        parentNode: targetNode,
+                        label: l.filter_view_grid,
+                        value: 'grid',
+                        checked: M.viewmode === 1
+                    },
+                ];
+
+                viewGroup = new MegaMobileRadioGroup({
+                    name: 'view',
+                    radios: views,
+                    align: 'right'
+                });
+
+                mega.ui.sheet.addContent(targetNode);
+            }
+
+            targetNode = document.createElement('div');
+            targetNode.className = 'filter';
+            subNode = document.createElement('h3');
+            subNode.textContent = l[6170];
+            targetNode.appendChild(subNode);
+
+            const {n, d} = M.sortmode || {};
+
+            const sorts = [
+                {
+                    parentNode: targetNode,
+                    label: l[86],
+                    value: 'name',
+                    checked: n === 'name',
+                    className: 'name'
+                }, {
+                    parentNode: targetNode,
+                    label: l[87],
+                    value: 'size',
+                    checked: n === 'size',
+                    className: 'size'
+                }
+            ];
+
+            if (M.currentdirid !== 'shares' && M.currentdirid !== 'out-shares') {
+
+                sorts.push({
+                    parentNode: targetNode,
+                    label: l[93],
+                    value: 'type',
+                    checked: n === 'type',
+                    className: 'type'
+                }, {
+                    parentNode: targetNode,
+                    label: M.currentdirid === 'public-links' ? l[20694] : l[17445],
+                    value: 'date',
+                    checked: n === 'date' || n === 'ts',
+                    className: 'date-added'
+                }, {
+                    parentNode: targetNode,
+                    label: l[94],
+                    value: 'mtime',
+                    checked: n === 'mtime',
+                    className: 'last-modified'
+                });
+            }
+
+            if (M.isLabelExistNodeList(M.v)) {
+
+                sorts.push({
+                    parentNode: targetNode,
+                    label: l[17398],
+                    value: 'label',
+                    checked: n === 'label',
+                    className: 'label'
+                });
+            }
+
+            if (M.currentdirid === 'shares') {
+
+                sorts.push({
+                    parentNode: targetNode,
+                    label: l[5905],
+                    value: 'owner',
+                    checked: n === 'owner',
+                    className: 'owner'
+                }, {
+                    parentNode: targetNode,
+                    label: l[5906],
+                    value: 'access',
+                    checked: n === 'access',
+                    className: 'access-permission'
+                });
+            }
+            else {
+                if (M.currentrootid !== M.RubbishID && M.currentrootid !== 'shares') {
+
+                    sorts.push({
+                        parentNode: targetNode,
+                        label: l[5871],
+                        value: 'fav',
+                        checked: n === 'fav',
+                        className: 'favourite'
+                    });
+                }
+
+                if (M.currentdirid === 'out-shares') {
+
+                    sorts.push({
+                        parentNode: targetNode,
+                        label: l[1036],
+                        value: 'sharedwith',
+                        checked: n === 'sharedwith',
+                        className: 'shared-with'
+                    }, {
+                        parentNode: targetNode,
+                        label: l[20670],
+                        value: 'date',
+                        checked: n === 'date',
+                        className: 'share-created'
+                    });
+                }
+            }
+
+            var orderArrow;
+
+            const sortByGroup = new MegaMobileRadioGroup({
+                name: 'sortby',
+                radios: sorts,
+                align: 'right',
+                onChange: function() {
+                    if (orderArrow) {
+                        const labelWrapper = this.domNode.querySelector('.label-wrapper');
+                        if (labelWrapper) {
+                            labelWrapper.appendChild(orderArrow.domNode);
+                            orderArrow.value = 1;
+                            orderArrow.icon = `sprite-mobile-fm-mono icon-arrow-up-thin-outline`;
+                        }
+                    }
+                }
+            });
+
+            mega.ui.sheet.addContent(targetNode);
+
+            const selectedRadio = sortByGroup.children[sortByGroup.value || 'name'];
+
+            let orderArrowParent;
+            if (selectedRadio && selectedRadio.domNode) {
+                orderArrowParent = selectedRadio.domNode.querySelector('.label-wrapper');
+            }
+
+            orderArrow = new MegaButton({
+                parentNode: orderArrowParent,
+                type: 'icon',
+                icon: `sprite-mobile-fm-mono icon-arrow-${d < 0 ? 'down' : 'up'}-thin-outline`,
+                iconSize: 24,
+                componentClassname: 'text-icon sort-arrow no-active',
+            });
+
+            orderArrow.value = d || 1;
+
+            orderArrow.on('tap.sortDirection', function() {
+                this.value *= -1;
+                this.icon = `sprite-mobile-fm-mono icon-arrow-${this.value < 0 ? 'down' : 'up'}-thin-outline`;
+            });
+
+            const applyButton = new MegaButton({
+                parentNode: mega.ui.sheet.actionsNode,
+                type: 'normal',
+                text: l.filter_apply
+            });
+
+            applyButton.on('tap.applyFilters', () => {
+                mega.ui.sheet.hide();
+
+                const fileManagerBlock = document.querySelector('.mobile.file-manager-block');
+
+                // skip if only the sorting or ordering is changed
+                if (viewGroup && viewGroup.value === 'grid' && M.viewmode !== 1) {
+                    mobile.cloud.enableGridView(fileManagerBlock);
+                }
+                else if (viewGroup && viewGroup.value === 'list' && M.viewmode !== 0) {
+                    mobile.cloud.enableListView(fileManagerBlock);
+                }
+
+                M.doSort(sortByGroup.value, orderArrow.value);
+                M.renderMain();
+
+                mega.ui.sheet.hide();
+            });
+
+            mega.ui.sheet.show();
+        });
+    }
+
+    // Header: Types and headings
+    /*
+        Types:
+        0 Root page
+        1 Non root page
+        2 Account page
+        3 Account pages start with fm/account
+    */
+    static types(index) {
+        const showBinIcon = M.currentrootid === M.RubbishID && M.v.length;
+
+        return [
+            {
+                'top-block': true,
+                'search': true,
+                'close': false,
+                'menu': true,
+                get 'bottom-block'() {
+                    return !!M.currentdirid; // no currentdirid means it is not found
+                },
+                'back': false,
+                'filter': true,
+                'heading': true,
+                'clear-bin': showBinIcon,
+                'create-folder': false
+            },
+            {
+                'top-block': true,
+                'search': true,
+                'close': false,
+                'menu': true,
+                'bottom-block': true,
+                'back': true,
+                'filter': true,
+                'heading': true,
+                'clear-bin': showBinIcon,
+                'create-folder': false
+            },
+            {
+                'top-block': {hideTablet: false, hidePhone: true},
+                'search-wrapper': false,
+                'close': false,
+                'menu': true,
+                'bottom-block': true,
+                'back': {hideTablet: true, hidePhone: false},
+                'filter': false,
+                'heading': true,
+                'clear-bin': false,
+                'create-folder': false
+            },
+            {
+                'top-block': {hideTablet: false, hidePhone: true},
+                'search-wrapper': false,
+                'close': false,
+                'menu': true,
+                'bottom-block': true,
+                'back': true,
+                'filter': false,
+                'heading': true,
+                'clear-bin': false,
+                'create-folder': false
+            },
+            {
+                'top-block': false,
+                'search': false,
+                'close': true,
+                'menu': false,
+                'bottom-block': true,
+                get back() {
+                    return M.currentrootid !== M.currentdirid;
+                },
+                'filter': false,
+                'heading': true,
+                'clear-bin': false,
+                get 'create-folder'() {
+                    return M.getNodeRights(M.currentdirid) > 0;
+                }
+            }
+        ][index];
+    }
+
+    static getPage() {
+        if (is_fm()) {
+            if (pfid) {
+                return;
+            }
+            if (is_mobile && mobile.nodeSelector.active) {
+                return mobile.nodeSelector.type;
+            }
+            if (M.currentdirid === M.RootID) {
+                return 'fm';
+            }
+            else if (M.currentdirid === M.RubbishID) {
+                return 'fm/rubbish';
+            }
+        }
+        return page;
+    }
+
+    static getType() {
+        let iType = 0;
+        if (M.currentdirid && M.currentrootid !== M.currentdirid) {
+            iType = 1;
+        }
+        if (page === 'fm/account' || page === 'keybackup') {
+            iType = 2;
+        }
+        if (page.startsWith('fm/account/') || page.startsWith('fm/refer') || page === 'support') {
+            iType = 3;
+        }
+        if (is_mobile && mobile.nodeSelector.active) {
+            iType = 4;
+        }
+
+        return MegaMobileHeader.types(iType);
+    }
+
+    static getHeading() {
+
+        if (!M.currentdirid) {
+            return;
+        }
+
+        let heading = this.headings[this.getPage()];
+
+        if (!heading) {
+
+            const nodeId = M.currentCustomView.nodeID || M.currentdirid;
+
+            console.assert(nodeId, 'Node id missing, cannot get name');
+
+            if (M.d[nodeId]) {
+                heading = M.d[nodeId].name;
+            }
+        }
+
+        return heading;
+    }
+}
+
+lazy(MegaMobileHeader, 'headings', () => {
+    'use strict';
+
+    return Object.freeze({
+        'fm': l[164],
+        'fm/shares': l.shared_items,
+        'fm/out-shares': l.shared_items,
+        'fm/public-links': l.shared_items,
+        'fm/rubbish': l[167],
+        'fm/account': l[403],
+        'fm/account/achievements': l[16117],
+        'fm/account/cancel': l[7165],
+        'fm/account/invite-friends': l[17465],
+        'fm/account/invites': l.invite_bonuses,
+        'fm/account/my-details': l.settings_account_details,
+        'fm/account/name': l[86],
+        'fm/account/country': l[481],
+        'fm/account/add-phone-number': l[20222],
+        'fm/account/avatar': l[20164],
+        'fm/account/security/change-password': l[23262],
+        'fm/account/security/change-email': l[7743],
+        'fm/account/security/verify': l[7730],
+        'fm/account/delete': l[16115],
+        'fm/account/delete/verify': l[16115],
+        'fm/account/qr-code': l[17754],
+        'fm/account/qr-code-settings': l.settings_account_qr_code_set,
+        'fm/account/delete': l[16115],
+        'fm/account/plan': l[16166],
+        'fm/account/notifications': l[862],
+        'fm/two-factor-confirmation': l[19194],
+        'fm/refer': l[22682],
+        'fm/refer/guide': l[22683],
+        'fm/refer/history': l[22808],
+        'fm/refer/distribution': l[22709],
+        'fm/refer/redeem': l[23403],
+        'fm/account/security': l.mobile_settings_privacy_security_title,
+        'fm/account/security/backup-key': l[8839],
+        'fm/account/security/lost-auth-device': l.lost_auth_device,
+        'fm/account/security/two-factor-authentication': l[19194],
+        'fm/account/security/session-history': l[429],
+        'fm/account/settings': l[823],
+        'fm/account/file-management': l[16159],
+        'fm/account/file-management/file-version': l[20168],
+        'fm/account/file-management/rubbish-cleaning': l.settings_file_management_rubbish_cleaning,
+        'fm/account/about': l[16112],
+        'fm/account/support': l[383],
+        'fm/account/paymentcard': l.payment_card,
+        'fm/account/about/terms-policies': l.mobile_settings_tos_title,
+        'move': l.move_to,
+        'copy': l.copy_to,
+        'support': l[516],
+        'keybackup': l[8839]
+    });
+});
+
+class MegaMobileTopMenu extends MegaComponent {
+
+    constructor(options) {
+        super(options);
+
+        if (!this.domNode) {
+            return;
+        }
+
+        const subNode = document.createElement('div');
+        subNode.className = 'top-nav';
+        this.domNode.appendChild(subNode);
+
+        this.megaLink = new MegaLink({
+            parentNode: subNode,
+            type: 'icon',
+            componentClassname: 'text-icon home',
+            icon: 'sprite-fm-illustration-wide img-mega-logo',
+            iconSize: 24
+        });
+        this.megaLink.on('tap.home', async() => {
+
+            if (mega.ui.viewerOverlay.confirmDiscard && !await mega.ui.viewerOverlay.confirmDiscard()) {
+                return false;
+            }
+
+            loadSubPage(u_attr ? 'fm' : 'start');
+
+            if (mega.ui.topmenu.visible) {
+                mega.ui.topmenu.hide();
+            }
+        });
+
+        const closeButton = new MegaButton({
+            parentNode: subNode,
+            type: 'icon',
+            componentClassname: 'text-icon close',
+            icon: 'sprite-mobile-fm-mono icon-dialog-close',
+            iconSize: 24
+        });
+        closeButton.on('tap.close', () => {
+            if (mega.ui.topmenu.visible) {
+                mega.ui.topmenu.hide();
+            }
+        });
+
+        this.menuNode = document.createElement('nav');
+        this.menuNode.className = 'menu';
+        this.domNode.append(this.menuNode);
+
+        // TODO: This is for support old page we should deprecate once new page is delivered
+        mBroadcaster.addListener('beforepagechange', () => {
+            $('.mobile.main-block').addClass('hidden');
+        });
+
+        this.domNode.addEventListener('transitionend', evt => {
+            if (evt.target === this.domNode) {
+                this.domNode.classList.remove('animate');
+            }
+        });
+
+        this.menuNode = this.domNode.querySelector('.menu');
+        this.menuNode.textContent = '';
+
+        this.renderMenuItems();
+
+        this.toggleActive();
+        mBroadcaster.addListener('pagechange', () => this.toggleActive());
+
+        // TODO: This is for support old page we should deprecate once new page is delivered
+        mBroadcaster.addListener('beforepagechange', () => {
+            $('.mobile.main-block, .mobile.old-page').addClass('hidden');
+        });
+
+        if (is_touchable) {
+
+            const _gestureHandler = () => {
+
+                if (document.body.offsetWidth < 769) {
+
+                    if (this.gesture) {
+                        return;
+                    }
+
+                    this.gesture = new MegaGesture({
+                        domNode: this.domNode,
+                        onTouchMove: ev => {
+
+                            const xDiff = this.gesture.xStart - ev.touches[0].clientX;
+
+                            this.domNode.style.transform = `translateX(${Math.max(0, -xDiff)}px)`;
+                        },
+                        onSwipeRight: () => {
+
+                            this.hide(true);
+                            this.trigger('close');
+                        },
+                        onTouchEnd: () => {
+                            this.domNode.style.transform = '';
+                        }
+                    });
+                }
+                else if (this.gesture) {
+                    this.gesture.destroy();
+                    delete this.gesture;
+                }
+            };
+
+            _gestureHandler();
+
+            window.addEventListener('resize', _gestureHandler);
+        }
+    }
+
+    closeActiveOverlays() {
+        if (mobile.nodeSelector.active) {
+            mobile.nodeSelector.hide();
+        }
+    }
+
+    renderMenuItems() {
+
+        const menuOpts = {
+            type: 'fullwidth',
+            componentClassname: 'text-icon menu-item',
+            iconSize: 24
+        };
+
+        for (const item of this.menuItems) {
+
+            let menuItem;
+
+            // Infer the tappable type
+            if (item.binding) {
+                menuItem = new MegaButton({
+                    ...menuOpts,
+                    ...item,
+                    parentNode: this.menuNode,
+                    componentClassname:
+                        `${menuOpts.componentClassname} ${item.typeClassname || ''} ${item.name || ''}`
+                });
+                menuItem.on('click.nav', event => {
+                    this.closeActiveOverlays();
+                    item.binding(event);
+                });
+            }
+            else if (item.href) {
+                menuItem = new MegaLink({
+                    ...menuOpts,
+                    ...item,
+                    parentNode: this.menuNode,
+                    componentClassname:
+                        `${menuOpts.componentClassname} ${item.typeClassname || ''} ${item.name || ''}`
+                });
+
+                menuItem.domNode.dataset.section = item.href;
+
+                menuItem.on('beforeRedirect.topmenu', () => {
+
+                    mega.ui.topmenu.hide();
+                    this.closeActiveOverlays();
+                });
+
+                if (menuItem.href === '/login') {
+
+                    menuItem.on('beforeRedirect.beforeLogin', () => {
+                        login_next = page;
+                    });
+
+                    mBroadcaster.once('login2', () => {
+
+                        this.destroy();
+                        delete mega.ui.topmenu;
+
+                        MegaMobileTopMenu.init();
+                    });
+                }
+            }
+            else if (item.type === 'ext' && typeof item.initiator === 'function') {
+                item.initiator(this.menuNode);
+            }
+            else if (item.type === 'spacer') {
+                const spacer = document.createElement('div');
+                spacer.className = `spacer ${item.typeClassname}`;
+                this.menuNode.appendChild(spacer);
+            }
+
+            if (item.avatar) {
+                menuItem.addClass('account-tablet');
+
+                useravatar.loadAvatar(u_handle).finally(() => {
+
+                    const avatarMeta = generateAvatarMeta(u_handle);
+                    const shortNameEl = mCreateElement('span');
+                    shortNameEl.textContent = avatarMeta.shortName;
+
+                    const avatar = avatarMeta.avatarUrl
+                        ? mCreateElement('img', {src: avatarMeta.avatarUrl})
+                        : mCreateElement('div', {class: `color${avatarMeta.color}`}, [shortNameEl]);
+
+                    const avatarContainer = mCreateElement('div', {class: 'avatar'}, [avatar]);
+
+                    menuItem.domNode.prepend(avatarContainer);
+                });
+
+                menuItem.domNode.dataset.section = '/fm/account';
+                menuItem.on('beforeRedirect.topmenu', () => {
+                    if (mobile.nodeSelector.active) {
+                        mobile.nodeSelector.hide('/fm/account');
+                    }
+                    return false;
+                });
+            }
+
+            if (item.hasTree) {
+
+                const treeWrap = mCreateElement(
+                    'div',
+                    {class: `fm-tree-panel ${item.treeWrapClass} ${item.typeClassname || ''}`},
+                    [menuItem.domNode], this.menuNode);
+
+                const expandArrow = new MegaButton({
+                    parentNode: treeWrap,
+                    type: 'icon',
+                    icon: 'sprite-fm-mono icon-chevron-down-thin-outline',
+                    iconSize: 16,
+                    componentClassname: 'tree-expander',
+                    prepend: true
+                });
+
+                const tree = mCreateElement('div', {class: `content-panel ${item.hasTree}`}, [
+                    mCreateElement('div', {class: 'tree'})
+                ], treeWrap);
+
+                expandArrow.on('click.treeExpand', () => {
+                    if (expandArrow.toggleClass('expanded')) {
+                        tree.classList.add('active');
+                    }
+                    else {
+                        tree.classList.remove('active');
+                    }
+
+                    M.addTreeUIDelayed();
+                });
+
+                menuItem.on(item.href ? 'beforeRedirect.treeExpand' : 'click.treeExpand', () => {
+                    if (menuItem.active) {
+                        expandArrow.trigger('click.treeExpand');
+                    }
+                });
+            }
+
+            if (item.name === 'rubbish-bin') {
+                this.rubbishBtn = menuItem;
+            }
+        }
+    }
+
+    get menuItems() {
+        return u_attr ? [
+            {
+                text: l[403],
+                href: '/fm/account',
+                componentClassname: 'account-tablet text-icon menu-item',
+                avatar: true
+            },
+            {
+                text: l[164],
+                icon: 'sprite-mobile-fm-mono icon-cloud-thin-outline',
+                href: '/fm',
+                eventLog: 99901
+            },
+            {
+                text: l.shared_items,
+                icon: 'sprite-mobile-fm-mono icon-share-thin-outline',
+                href: '/fm/shares',
+                eventLog: 99902
+            },
+            {
+                text: l[167],
+                icon: 'sprite-mobile-fm-mono icon-trash-thin-outline',
+                href: '/fm/rubbish',
+                eventLog: 99846
+            },
+            {
+                text: l.mobile_settings_lang_title,
+                subtext: languages[lang][2],
+                icon: 'sprite-mobile-fm-mono icon-globe-01-thin-outline',
+                binding: is_mobile && mobile.languageMenu.init
+            },
+            {
+                text: l[823],
+                icon: 'sprite-mobile-fm-mono icon-settings-thin-outline',
+                href: '/fm/account/settings',
+                eventLog: 99903
+            }
+        ] : [
+            {
+                text: l.mobile_settings_website_title,
+                icon: 'sprite-mobile-fm-mono icon-globe-01-thin-outline',
+                href: 'https://mega.io'
+            },
+            {
+                text: l[1361],
+                icon: 'sprite-mobile-fm-mono icon-dollar-sign-thin',
+                href: '/pro'
+            },
+            {
+                text: l[384],
+                icon: 'sprite-mobile-fm-mono icon-headset-thin-outline',
+                href: 'help'
+            },
+            {
+                text: l.mobile_settings_appearance_title,
+                icon: 'sprite-mobile-fm-mono icon-palette-thin-outline',
+                binding: is_mobile && mobile.appearance.init
+            },
+            {
+                text: l.mobile_settings_lang_title,
+                subtext: languages[lang][2],
+                icon: 'sprite-mobile-fm-mono icon-globe-01-thin-outline',
+                binding: is_mobile && mobile.languageMenu.init
+            },
+            {
+                text: l.log_in,
+                icon: 'sprite-mobile-fm-mono icon-log-out-thin-outline',
+                href: '/login'
+            }
+        ];
+    }
+
+    static init() {
+
+        if (!mega.ui.topmenu) {
+            mega.ui.topmenu = new MegaMobileTopMenu({
+                parentNode: mainlayout,
+                componentClassname: 'mega-top-menu',
+                prepend: true
+            });
+        }
+    }
+
+    static getPageRoot() {
+        const {active: selActive, origin: selOrigin} = is_mobile && mobile.nodeSelector || {};
+        const page = selActive ? `fm/${selOrigin}` : window.page;
+        const root = selActive ? M.getNodeRoot(selOrigin) : (M.currentrootid || M.getNodeRoot(M.currentdirid));
+
+        if (!is_fm()) {
+            return page;
+        }
+
+        if (/\/(notifications|about|support|file-management|settings)$/.test(page) ||
+            page.includes('security') && !page.includes('change-password')
+            && !page.includes('change-email') && !page.includes('verify')) {
+
+            return '/fm/account/settings';
+        }
+        else if (page.startsWith('fm/account')) {
+            return '/fm/account';
+        }
+        else if (page.endsWith('account')) {
+            return `/${page}`;
+        }
+        else if (page === 'fm' || `fm/${root}` === `fm/${M.RootID}`) {
+            return '/fm';
+        }
+        else if (`fm/${root}` === `fm/${M.RubbishID}`) {
+            return '/fm/rubbish';
+        }
+        return `/fm/${root || M.RootID}`;
+    }
+
+    // General methods for the top menu
+    get visible() {
+        return getComputedStyle(this.domNode).position === 'relative' ||
+            this.domNode.classList.contains('active');
+    }
+
+    show() {
+        this.domNode.classList.add('active', 'animate');
+    }
+
+    hide(noDelay) {
+
+        if (noDelay) {
+            this.domNode.classList.add('no-delay');
+        }
+
+        this.domNode.classList.add('animate');
+        this.domNode.classList.remove('active');
+
+        onIdle(() => this.domNode.classList.remove('no-delay'));
+    }
+
+    toggleActive() {
+
+        const page = MegaMobileTopMenu.getPageRoot();
+
+        // if (mega.flags.ab_ads) {
+            mega.commercials.mobileFmTabHander();
+        // }
+
+        for (const item of this.domNode.querySelectorAll('.menu-item')) {
+
+            const isASharesPage = item.dataset.section === '/fm/shares' &&
+                (M.currentrootid === 'out-shares' || M.currentrootid === 'public-links');
+            const isSupportPage = item.dataset.section === '/fm/account/settings' && page === 'support';
+
+            if (item.dataset.section === page || isASharesPage || isSupportPage) {
+
+                item.component.addClass('active');
+                if (item.dataset.section !== '/fm/account') {
+                    item.component.icon = item.component.icon.replace('outline', 'solid');
+                }
+            }
+            else if (item.component.active) {
+                item.component.removeClass('active');
+                if (item.dataset.section !== '/fm/account') {
+                    item.component.icon = item.component.icon.replace('solid', 'outline');
+                }
+            }
+        }
+    }
+
+    static renderUpgradeButton(userInfoContainer, eventid) {
+
+        let btn;
+
+        if (u_attr && !u_attr.pf && !u_attr.b) {
+            btn = new MegaLink({
+                parentNode: userInfoContainer,
+                href: 'pro',
+                componentClassname: 'upgrade outline',
+                text: l[433],
+                eventLog: eventid
+            });
+        }
+
+        // If expired business master account show reactivate button
+        else if (u_attr && (u_attr.b && u_attr.b.m && u_attr.b.s !== pro.ACCOUNT_STATUS_ENABLED
+            || u_attr.pf && u_attr.pf.s !== pro.ACCOUNT_STATUS_ENABLED)) {
+
+            btn = new MegaLink({
+                parentNode: userInfoContainer,
+                href: 'repay',
+                componentClassname: 'upgrade outline',
+                text: l.mobile_account_reactivate,
+                eventLog: eventid
+            });
+        }
+
+        if (btn) {
+            btn.rebind('beforeRedirect', () => {
+                if (this.overlayAccount) {
+                    mega.ui.overlay.hide();
+                }
+            });
+        }
+
+        return btn;
+    }
+}

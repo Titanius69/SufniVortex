@@ -1,0 +1,30 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.11.35303.130
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SufniBrowser", "SufniBrowser\SufniBrowser.csproj", "{69331355-14DB-4FB1-99F1-E74DF4487DA6}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{882BA137-A55A-44C7-B7F2-E8262FCD73A3}"
+	ProjectSection(SolutionItems) = preProject
+		.editorconfig = .editorconfig
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{69331355-14DB-4FB1-99F1-E74DF4487DA6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{69331355-14DB-4FB1-99F1-E74DF4487DA6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{69331355-14DB-4FB1-99F1-E74DF4487DA6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{69331355-14DB-4FB1-99F1-E74DF4487DA6}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {1C49B722-7B5E-46B8-A378-DCE544DB14E8}
+	EndGlobalSection
+EndGlobal

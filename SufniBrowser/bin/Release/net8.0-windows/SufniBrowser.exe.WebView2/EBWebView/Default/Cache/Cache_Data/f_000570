@@ -1,0 +1,4105 @@
+/* Bundle Includes:
+ *   js/ui/passwordReminderDialog.js
+ *   js/metatags.js
+ *   js/vendor/verge.js
+ *   js/vendor/perfect-scrollbar.js
+ *   js/ui/languageDialog.js
+ *   js/ui/commercials.js
+ */
+
+(function(scope) {
+    "use strict";
+
+    var DEBUG = localStorage.debugPasswordReminderDialog || false;
+
+    // all values are in seconds.
+    var DAY = 86400;
+    var SHOW_AFTER_LASTLOGIN = 14 * DAY;
+    var SHOW_AFTER_LASTSKIP = 90 * DAY;
+    // var SHOW_AFTER_LASTSKIP_LOGOUT = 30 * DAY;
+    var SHOW_AFTER_ACCOUNT_AGE = 7 * DAY;
+    var SHOW_AFTER_LASTSUCCESS = 90 * DAY;
+    var RECHECK_INTERVAL = 15 * 60;
+
+    if (DEBUG) {
+        SHOW_AFTER_LASTLOGIN = 15;
+        SHOW_AFTER_LASTSKIP = 30;
+        // SHOW_AFTER_LASTSKIP_LOGOUT = 5;
+        SHOW_AFTER_LASTSUCCESS = 45;
+        SHOW_AFTER_ACCOUNT_AGE = DAY;
+        RECHECK_INTERVAL = 15;
+    }
+
+    var PasswordReminderAttribute = function(dialog, changedCb, str) {
+        var self = this;
+        self.dialog = dialog;
+        self._queuedSetPropOps = [];
+
+        if (changedCb) {
+            this.changedCb = changedCb;
+        }
+        PasswordReminderAttribute.PROPERTIES.forEach(function(prop) {
+            self["_" + prop] = 0;
+
+            Object.defineProperty(self, prop, {
+                get: function() { return self["_" + prop]; },
+                set: function(newValue) {
+                    if (!self.loading) {
+                        self._queuedSetPropOps.push([prop, newValue]);
+                    }
+                    else if (self.loading && self.loading.state() === 'pending') {
+                        self.loading.always(function() {
+                            self["_" + prop] = newValue;
+                            self.hasChanged(prop);
+                        });
+                    }
+                    else {
+                        self["_" + prop] = newValue;
+                        self.hasChanged(prop);
+                    }
+                },
+                enumerable: true,
+                configurable: true
+            });
+        });
+
+
+        if (str) {
+            self.mergeFromString(str);
+        }
+    };
+
+    PasswordReminderAttribute.prototype.mergeFromString = function(str) {
+        var self = this;
+
+        var vals = str.split(":");
+        var wasMerged = false;
+        PasswordReminderAttribute.PROPERTIES.forEach(function(prop, index) {
+            var val = typeof vals[index] !== 'undefined' ? parseInt(vals[index]) : 0;
+
+            if (Number.isNaN(val)) {
+                val = 0;
+            }
+
+            if (self["_" + prop] !== val) {
+                self["_" + prop] = val;
+                wasMerged = true;
+            }
+        });
+        if (wasMerged) {
+            self.hasBeenMerged();
+        }
+    };
+
+    PasswordReminderAttribute.prototype.hasChanged = function(prop) {
+        // Update ui?
+        if (this.changedCb) {
+            this.changedCb(prop);
+        }
+
+        // Save via mega.attr
+        return this.save(prop === 'lastLogin').catch(dump);
+    };
+
+    PasswordReminderAttribute.prototype.hasBeenMerged = function() {
+        // update ui?
+        if (this.changedCb) {
+            this.changedCb();
+        }
+    };
+
+    PasswordReminderAttribute.prototype.toString = function() {
+        var self = this;
+        var vals = [];
+        PasswordReminderAttribute.PROPERTIES.forEach(function(prop) {
+            vals.push(self["_" + prop]);
+        });
+        return vals.join(":");
+    };
+
+    PasswordReminderAttribute.prototype.save = function(delayed) {
+
+        if (!this.savingPromise) {
+
+            const save = () => {
+                const data = this.toString();
+
+                return mega.attr.set2(null, 'prd', data, -2, true)
+                    .always(() => {
+                        if (data !== this.toString()) {
+
+                            return save();
+                        }
+                    })
+                    .finally(() => {
+                        delete this.savingPromise;
+                    });
+            };
+
+            if (delayed) {
+
+                this.savingPromise = tSleep(Math.max(delayed | 0, 3)).then(save);
+            }
+            else {
+
+                this.savingPromise = save();
+            }
+        }
+
+        return this.savingPromise;
+    };
+
+    PasswordReminderAttribute.prototype.loadFromAttribute = function() {
+        var self = this;
+
+        if (self.loading) {
+            return;
+        }
+
+        self.loading = mega.attr.get(u_handle, 'prd', -2, true)
+            .done(function (r) {
+                if (isString(r)) {
+                    self.dialog._initFromString(r);
+                }
+                else {
+                    self.dialog._initFromString("");
+                }
+            })
+            .fail(function (e) {
+                if (e === ENOENT) {
+                    self.dialog._initFromString("");
+                }
+            })
+            .always(function() {
+                if (self._queuedSetPropOps.length > 0) {
+                    self._queuedSetPropOps.forEach(function(op) {
+                        self[op[0]] = op[1];
+                    });
+                    self._queuedSetPropOps = [];
+                }
+                if (self.changedCb) {
+                    self.changedCb();
+                }
+            });
+    };
+
+    PasswordReminderAttribute.prototype.attributeUpdatedViaAp = function() {
+        if (this.loading) {
+            this.loading.reject();
+            this.loading = false;
+        }
+
+        this.loadFromAttribute();
+    };
+
+    /**
+     * Those properties are intentionally stored in an array, they are ordered and that order is important for when
+     * saving/retrieving data from mega.attr.*.
+     * In case a new key is added, please append it at the end of the list.
+     * Never remove a key from the array above.
+     *
+     * @type {Array}
+     */
+    PasswordReminderAttribute.PROPERTIES = [
+        'lastSuccess',
+        'lastSkipped',
+        'masterKeyExported',
+        'dontShowAgain',
+        'lastLogin'
+    ];
+
+    const showTextIcon = 'icon-eye-reveal';
+    const hideTextIcon = 'icon-eye-hidden';
+
+    class PasswordReminderDialog {
+        constructor() {
+            this.passwordReminderAttribute = new PasswordReminderAttribute(this, prop => {
+                this.recheck(
+                    prop !== 'lastSuccess' &&
+                    prop !== 'dontShowAgain' &&
+                    prop !== 'masterKeyExported'
+                );
+                if (prop === 'masterKeyExported') {
+                    this.hideIcon();
+                }
+            });
+            this.succeeded = false;
+            this.isLogout = false;
+
+            this.NAMESPACE = 'recoverykey-logout-overlay';
+
+            if (is_mobile) {
+                // When the user presses the browser's back button, the parameter dialogShown should be updated
+                // if the overlay is no longer visible.
+                window.addEventListener('popstate', () => {
+                    if (mega.ui.overlay.name === this.NAMESPACE
+                        && mega.ui.passwordReminderDialog.dialogShown !== mega.ui.overlay.visible) {
+                        mega.ui.passwordReminderDialog.dialogShown = mega.ui.overlay.visible;
+                    }
+                });
+            }
+        }
+
+        async onConfirmClicked() {
+            this.wrongLabel.classList.add('hidden');
+            this.correctLabel.classList.add('hidden');
+            const derivedKey = await security.getDerivedEncryptionKey(this.passwordField.value).catch(dump) || '';
+            const correctPassword = checkMyPassword(derivedKey);
+            if (correctPassword) {
+                this.dialog.classList.add('accepted');
+                this.dialog.classList.remove('wrong');
+                this.correctLabel.classList.remove('hidden');
+                this.passwordReminderAttribute.lastSuccess = unixtime();
+
+                this.skipLink.text = l[967];
+                this.succeeded = true;
+                this.hideIcon();
+                eventlog(500319);
+                return;
+            }
+            this.dialog.classList.add('wrong');
+            this.dialog.classList.remove('accepted');
+            this.wrongLabel.classList.remove('hidden');
+            this.correctLabel.classList.add('hidden');
+            if (this.passwordField) {
+                this.passwordField.focus();
+            }
+            this.downloadButton.removeClass('green-button');
+            this.downloadButton.addClass('red-button');
+            eventlog(500320);
+        }
+
+        onSkipClicked() {
+            if (this.succeeded) {
+                this.hideIcon();
+            }
+            else {
+                this.passwordReminderAttribute.lastSkipped = unixtime();
+            }
+
+            this.onLogoutDialogUserAction().always(() => this.hideDialog());
+        }
+
+        async onLogoutDialogUserAction() {
+            if (this.passwordReminderAttribute.savingPromise) {
+                if (this.promise) {
+                    loadingDialog.show();
+                    this.promise.always(() => {
+                        loadingDialog.hide();
+                    });
+                }
+                await this.passwordReminderAttribute.savingPromise.catch(nop);
+            }
+            if (this.promise) {
+                this.promise.resolve(true);
+            }
+        }
+
+        async onBackupClicked() {
+            eventlog(500020);
+            await M.saveAs(a32_to_base64(window.u_k || ''), `${M.getSafeName(l[20830])}.txt`);
+            mega.ui.toast.rack.addClass('above-fab');
+            mega.ui.toast.show(l.recovery_key_download_toast);
+            this.passwordReminderAttribute.masterKeyExported = 1;
+            this.showLogoutStep();
+        }
+
+        init() {
+            if (!this.initialised) {
+                this.initialised = true;
+            }
+            this.initDialogContents();
+            if (this.passwordReminderAttribute.loading) {
+                this.recheck();
+            }
+            else {
+                this.passwordReminderAttribute.loadFromAttribute();
+            }
+        }
+
+        onTopmenuReinit() {
+            if (this.topIcon && !document.body.contains(this.topIcon)) {
+                this.hideDialog();
+                this.initialised = false;
+                this.topIcon = null;
+            }
+            this.prepare();
+        }
+
+        /**
+         * Prepare the PRD.
+         * @returns {void}
+         */
+        prepare() {
+            if (this.initialised) {
+                this.resetUI();
+            }
+            else {
+                this.init();
+            }
+        }
+
+        _scheduleRecheck() {
+            if (this.recheckInterval) {
+                this.recheckInterval.abort();
+                this.recheckInterval = null;
+            }
+
+            (this.recheckInterval = tSleep(RECHECK_INTERVAL))
+                .then(() => {
+                    onIdle(() => this._scheduleRecheck());
+                    this.recheckInterval = null;
+                    this.recheck();
+                })
+                .catch(dump);
+        }
+
+        _initFromString(str) {
+            this.passwordReminderAttribute.mergeFromString(str);
+            if (this.recheckInterval) {
+                this.recheckInterval.abort();
+                this.recheckInterval = null;
+            }
+
+            if (!this.passwordReminderAttribute.dontShowAgain) {
+                this._scheduleRecheck();
+
+                this.recheck();
+            }
+        }
+
+        get canShowDialog() {
+            const time = unixtime();
+            const { masterKeyExported, dontShowAgain, lastSuccess, lastLogin } = this.passwordReminderAttribute;
+            // User has not exported the recovery key
+            // User has not disabled showing the dialog
+            // User has been registered at least a week
+            // User last succeeded in verifying over 3 months ago
+            // User's last login was over 2 weeks ago
+            return u_type === 3 &&
+                !masterKeyExported &&
+                !dontShowAgain &&
+                time - u_attr.since > SHOW_AFTER_ACCOUNT_AGE &&
+                time - lastSuccess > SHOW_AFTER_LASTSUCCESS &&
+                time - lastLogin > SHOW_AFTER_LASTLOGIN;
+        }
+
+        recheck(hideIfShown) {
+            if (!u_handle) {
+                // user is in the middle of a logout...
+                return;
+            }
+
+            // skip any re-checks in case this is the 'cancel' page
+            if (window.location.toString().includes('/cancel')) {
+                return;
+            }
+            hideIfShown = hideIfShown && (!this.passwordField || this.passwordField.value === '') && !this.isLogout;
+
+            if (this.canShowDialog) {
+                // skip recheck in case:
+                // - there is no top-icon, i.e. we are on a custom page
+                // - there is a visible .dropdown
+                // - the user had a textarea, input or select field focused
+                // - there is a visible/active dialog
+                const skipShowingDialog = !this.showIcon()
+                    || $(
+                        'textarea:focus, input:focus, select:focus, .dropdown:visible:first, .mega-dialog:visible:first'
+                    ).length > 0;
+
+                if (
+                    !skipShowingDialog &&
+                    is_fm() &&
+                    !pfid &&
+                    (
+                        !this.passwordReminderAttribute.lastSkipped ||
+                        unixtime() - this.passwordReminderAttribute.lastSkipped > SHOW_AFTER_LASTSKIP
+                    )
+                ) {
+                    this.showDialog();
+                }
+                else if (hideIfShown) {
+                    this.hideDialog();
+                }
+            }
+            else if (hideIfShown) {
+                this.hideIcon();
+                this.hideDialog();
+            }
+        }
+
+        showIcon() {
+            if (!this.topIcon || this.topIcon.classList.contains('hidden') || !document.body.contains(this.topIcon)) {
+                // because, we have plenty of top menus, that may not be visible/active
+                const $icon = $('.js-pass-reminder', '.top-head, .mega-header');
+                this.topIcon = $icon[0];
+                if (this.topIcon) {
+                    $icon.removeClass('hidden').rebind('click.prd', () => this.showDialog());
+                }
+            }
+            return !!this.topIcon;
+        }
+
+        resetUI() {
+            assert(this.dialog);
+            const textInfo = this.dialog.querySelector('.text.info');
+            if (textInfo) {
+                textInfo.textContent = '';
+                textInfo.append(parseHTML(l.logout_recovery_key));
+            }
+
+            this.dialog.querySelector('.recovery-key.container').classList.remove('hidden');
+            this.dialog.querySelector('.pass-reminder.container').classList.add('hidden');
+
+            this.skipLink.text = l[1379];
+            this.skipLink.removeClass('button-prd-skip');
+            this.skipLink.show();
+            this.dialog.classList.remove('wrong', 'accepted');
+
+            this.wrongLabel.classList.add('hidden');
+            this.correctLabel.classList.add('hidden');
+
+            this.downloadButton.removeClass('red-button');
+            this.downloadButton.addClass('green-button');
+
+            this.passVisibleButton.classList.add(showTextIcon);
+            this.passVisibleButton.classList.remove(hideTextIcon);
+            // On mobile, if the input were readonly, the keyboard would not open when taking focus
+            this.passwordField.removeAttribute('style');
+            this.passwordField.value = '';
+            this.passwordField.type = 'password';
+            this.passwordField.setAttribute('readonly', !is_mobile);
+            this.passwordField.classList.remove('hidden');
+        }
+
+        hideIcon() {
+            if (!this.topIcon) {
+                return;
+            }
+
+            $(this.topIcon).addClass('hidden').off('click.prd');
+        }
+
+        showDialog(promise) {
+            assert(this.dialog, 'dialog not defined.');
+
+            if (this.dialogShown) {
+                return;
+            }
+            this.dialogShown = true;
+
+            const options = {
+                name: this.NAMESPACE,
+                title: l.logout_before,
+                contents: [this.initDialogContents()],
+                showClose: true,
+                icon: 'bell',
+            };
+            if (is_mobile) {
+                options.onClose = () => this.hideDialog();
+                mega.ui.overlay.show(options);
+            }
+            else {
+                options.footer = {
+                    type: 'checkbox',
+                    componentClassname: 'mega-checkbox',
+                    checkboxName: 'show-again',
+                    checkboxAlign: 'left',
+                    labelTitle: l.remind_recovery_check,
+                    checked: false
+                };
+                options.onShow = () => {
+                    mega.ui.sheet.footerComp.on('toggle.prd', ({ data }) => {
+                        this.passwordReminderAttribute.dontShowAgain = data | 0;
+                        eventlog(500024, data ? 'checked' : 'unchecked');
+                    });
+                };
+                options.onClose = () => {
+                    this.hideDialog();
+                    eventlog(500318);
+                };
+                mega.ui.sheet.show(options);
+                mega.ui.sheet.addClass(this.NAMESPACE);
+            }
+
+            if (promise) {
+                this.promise = promise;
+                promise.always(() => {
+                    delete this.promise;
+                });
+            }
+        }
+
+        hideDialog() {
+            if (!this.dialogShown) {
+                return;
+            }
+            if (this.promise) {
+                this.promise.reject();
+            }
+            this.dialogShown = false;
+            this.succeeded = false;
+            this.isLogout = false;
+
+            const component = is_mobile ? mega.ui.overlay : mega.ui.sheet;
+
+            component.removeClass(this.NAMESPACE);
+
+            if (component.name === this.NAMESPACE) {
+                component.hide();
+                component.clear();
+            }
+            if ($.dialog === this.NAMESPACE) {
+                delete $.dialog;
+            }
+        }
+
+        async recheckLogoutDialog() {
+            if (!u_handle) {
+                return true;
+            }
+
+            if (window.location.toString().includes('/cancel')) {
+                return true;
+            }
+
+            if (
+                u_type === 3 &&
+                !this.passwordReminderAttribute.dontShowAgain &&
+                page !== 'start' &&
+                (is_fm() || dlid)
+            ) {
+                const { promise } = mega;
+                this.showDialog(promise);
+                return promise;
+            }
+            return true;
+        }
+
+        initDialogContents() {
+            if (!this.dialog) {
+                this.dialog = mCreateElement('div', {'class': 'recovery-key-logout'}, [
+                    mCreateElement('span', {'class': 'text info'}, [parseHTML(l.logout_recovery_key)])
+                ]);
+
+                const recoveryKey = a32_to_base64(window.u_k || '');
+
+                let rkinput;
+
+                // Step 1: Actual recovery key input + download button
+                const recoveryKeyContainer = mCreateElement('div', {'class': 'recovery-key container'}, [
+                    mCreateElement('span', {'class': 'recovery-key blurb'}, [document.createTextNode(
+                        l.logout_recovery_key_title)]),
+                    rkinput = mCreateElement('div', {'class': 'recovery-key input'}, [
+                        mCreateElement('input', {
+                            'class': 'recovery-key string',
+                            'type': 'text',
+                            'readonly': '',
+                            'value': recoveryKey
+                        })])
+                ], this.dialog);
+
+                // Inline copy button
+                const copyButton = new MegaButton({
+                    parentNode: rkinput,
+                    type: 'icon',
+                    icon: `${mega.ui.sprites.mono} icon-square-copy`,
+                    iconSize: 20,
+                    componentClassname: 'text-icon'
+                });
+                copyButton.on('click', () => {
+                    eventlog(500026);
+                    copyToClipboard(recoveryKey);
+                    mega.ui.toast.rack.addClass('above-fab');
+                    mega.ui.toast.show(l[8836]);
+                });
+
+                // Download button
+                this.downloadButton = new MegaButton({
+                    parentNode: recoveryKeyContainer,
+                    text: l.logout_recovery_key_download,
+                    componentClassname: 'primary block dlButton button-prd-backup'
+                });
+                this.downloadButton.on('click', () => {
+                    this.onBackupClicked().catch(tell);
+                });
+
+                // Step 2: Actual password input + confirm button
+                const passReminderContainer = mCreateElement('div', {'class': 'pass-reminder container hidden'}, [
+                    mCreateElement('div', {'class': 'mega-input title-ontop box-style fixed-width mobile'}, [
+                        mCreateElement('div', {'class': 'mega-input-title'}, [document.createTextNode(l[909])]),
+                        this.passwordField = mCreateElement('input', {
+                            'class': 'underlinedText megaInputs',
+                            'type': 'password',
+                            'id': 'test-pass'
+                        }),
+                        this.passVisibleButton =
+                            mCreateElement('i', {'class': `${mega.ui.sprites.mono} ${showTextIcon} pass-visible`})
+                    ]),
+                    mCreateElement('div', {'class': 'pass-reminder-results'}, [
+                        this.correctLabel =
+                            mCreateElement('div', {'class': 'pass-reminder result-txt accepted hidden'}, [
+                                mCreateElement('i', {
+                                    'class': `${mega.ui.sprites.mono} icon-check-circle-thin-outline`
+                                }),
+                                mCreateElement('span', {'class': 'result-text'}, [
+                                    document.createTextNode(l.logout_password_confirm_correct)
+                                ])
+                            ]),
+                        this.wrongLabel = mCreateElement('div', {'class': 'pass-reminder result-txt wrong hidden'}, [
+                            mCreateElement('i', {'class': `${mega.ui.sprites.mono} icon-alert-triangle-thin-outline`}),
+                            mCreateElement('span', {'class': 'result-text'}, [
+                                document.createTextNode(l.logout_password_confirm_no_correct)
+                            ])
+                        ]),
+                    ])
+                ], this.dialog);
+
+                this.passwordField.addEventListener('focus', () => {
+                    if (this.passwordField.type === 'password') {
+                        if (ua.details.browser === 'Chrome') {
+                            this.passwordField.style.webkitTextSecurity = 'disc';
+                        }
+                        else {
+                            this.passwordField.type = 'password';
+                        }
+                    }
+                    this.passwordField.removeAttribute('readonly');
+                    this.passwordField.setAttribute(
+                        'autocomplete',
+                        `section-off${rand_range(1, 123244)} off disabled nope no none`
+                    );
+                    eventlog(500317);
+                });
+                this.passwordField.addEventListener('keydown', e => {
+                    if (!this.dialogShown) {
+                        return;
+                    }
+
+                    if (e.key === 'Enter') {
+                        eventlog(500019);
+                        this.onConfirmClicked().catch(dump);
+                        return false;
+                    }
+                    this.dialog.classList.remove('wrong');
+                    this.dialog.classList.remove('accepted');
+                    this.correctLabel.classList.add('hidden');
+                    this.wrongLabel.classList.add('hidden');
+                });
+
+                this.passVisibleButton.addEventListener('click', () => {
+                    if (this.passVisibleButton.classList.contains(showTextIcon)) {
+                        this.passwordField.type = 'text';
+                        if (this.passwordField.style.webkitTextSecurity) {
+                            this.passwordField.style.webkitTextSecurity = 'none';
+                        }
+                        this.passVisibleButton.classList.remove(showTextIcon);
+                        this.passVisibleButton.classList.add(hideTextIcon);
+                    }
+                    else {
+                        this.passwordField.type = 'password';
+                        if (this.passwordField.style.webkitTextSecurity) {
+                            this.passwordField.style.webkitTextSecurity = 'disc';
+                        }
+                        this.passVisibleButton.classList.add(showTextIcon);
+                        this.passVisibleButton.classList.remove(hideTextIcon);
+                    }
+                });
+
+                // Confirm button
+                this.confirmButton = new MegaButton({
+                    parentNode: passReminderContainer,
+                    text: l.logout_password_confirm,
+                    componentClassname: 'primary block confirmButton button-prd-confirm'
+                });
+                this.confirmButton.on('click', () => {
+                    eventlog(500019);
+                    this.onConfirmClicked().catch(dump);
+                });
+
+                let forgotPasswordButton;
+                // Forgot password link
+                mCreateElement('div', {'class': 'pass-reminder-forgot'}, [
+                    parseHTML(l[1934]),
+                    forgotPasswordButton
+                        = mCreateElement('a', {'class': 'forgot-password clickurl'}, [parseHTML(l[23262])])
+                ], passReminderContainer);
+                forgotPasswordButton.addEventListener('click', () => {
+                    this.hideDialog();
+                    if (this.promise) {
+                        this.promise.reject();
+                    }
+                    this.passwordField.value = '';
+
+                    eventlog(500022);
+                    loadSubPage('/fm/account/security/change-password');
+                });
+
+                // Skip link
+                this.skipLink = new MegaLink({
+                    parentNode: this.dialog,
+                    type: 'text',
+                    componentClassname: 'skip-link',
+                    text: l[1379]
+                });
+                this.skipLink.on('click.skip', () => {
+                    if (this.succeeded || this.skipLink.text === l.logout_proceed) {
+                        eventlog(500023);
+                        this.isLogout = true;
+                        this.onSkipClicked();
+                    }
+                    else {
+                        this.showPasswordStep();
+                    }
+                });
+            }
+
+            this.resetUI();
+
+            return this.dialog;
+        }
+
+        showPasswordStep() {
+            this.dialog.querySelector('.recovery-key.container').classList.add('hidden');
+
+            const component = is_mobile ? mega.ui.overlay : mega.ui.sheet;
+            component.addTitle(l[16895]);
+            component.clearImage('password');
+            component.addImage('password');
+
+            const textInfo = this.dialog.querySelector('.text.info');
+            if (textInfo) {
+                textInfo.textContent = l.logout_password;
+            }
+
+            this.dialog.querySelector('.pass-reminder.container').classList.remove('hidden');
+
+            if (this.promise) {
+                this.showLogoutStep();
+            }
+            else {
+                this.skipLink.hide();
+            }
+        }
+
+        showLogoutStep() {
+            this.skipLink.text = this.promise ? l.logout_proceed : l.logout_password_confirm;
+            this.skipLink.addClass('button-prd-skip');
+            this.skipLink.show();
+        }
+    }
+
+    const passwordReminderDialog = new PasswordReminderDialog();
+    scope.mega.ui.passwordReminderDialog = passwordReminderDialog;
+
+    mBroadcaster.once('login', function() {
+        // cancel page can trigger a login event, which should NOT trigger PRD attribute update.
+        if (window.location.toString().indexOf("/cancel") > -1) {
+            return;
+        }
+
+        // since u_type is not available yet, assuming that 'login' would only be triggered by a normal user login
+        // e.g. u_type === 3
+        passwordReminderDialog.passwordReminderAttribute.lastLogin = unixtime();
+    });
+
+    mBroadcaster.addListener('keyexported', function() {
+        passwordReminderDialog.passwordReminderAttribute.masterKeyExported = 1;
+    });
+
+    mBroadcaster.addListener('attr:passwordReminderDialog', function() {
+        passwordReminderDialog.passwordReminderAttribute.attributeUpdatedViaAp();
+    });
+
+})(window);
+
+mega.metatags = new function() {
+    'use strict';
+
+    /**
+     * Private function to check if the page is excluded and not missing
+     * @param {String} page     Page name
+     * @returns {Boolean}       true/false is excluded.
+     */
+    var isPageExcluded = function(page) {
+        // XXX: add new items sorted alphabetically.
+        var excludedPages = [
+            'activate-s4', 'keybackup', 'businessinvite', 'businesssignup', 'cancel', 'confirm', 'debug',
+            'discount', 'download', 'emailverify', 'key', 'filerequest', 'payment', 'recover',
+            'recoverybykey', 'recoverybypark', 'recoveryenterkey',
+            'recoverykeychangepass', 'recoveryparkchangepass',
+            'redeem', 'repay', 'reset', 'sms', 'start', 'test', 'thanks', 'twofactor',
+            'unsub', 'verify', 'voucher', 'wiretransfer'
+        ];
+
+        if (!page) {
+            return true;
+        }
+
+        for (var i = excludedPages.length; i--;) {
+            var ep = excludedPages[i];
+
+            if (page.substr(0, ep.length) === ep) {
+                return ep.length === page.length ? -1 : ep.length;
+            }
+        }
+
+        return false;
+    };
+
+    var stopBots = function(metaRobots, noReporting) {
+        if (!noReporting && !isPageExcluded(page) && !is_fm() && !is_extension) {
+            if (d) {
+                console.error('A page without title. Please handle. Page: ' + page);
+            }
+            eventlog(99735, `page without title: ${String(page).split('#')[0]}`);
+        }
+
+        metaRobots = document.createElement('meta');
+        metaRobots.name = 'robots';
+        metaRobots.content = 'noindex';
+        document.head.appendChild(metaRobots);
+    };
+
+    var setMeta = function(attr, val, content) {
+        var meta = document.head.querySelector('meta[' + attr + '="' + val + '"]');
+        if (!meta) {
+            meta = document.createElement('meta');
+            meta.setAttribute(attr, val);
+            document.head.appendChild(meta);
+        }
+        meta.content = content;
+    };
+
+    var insertOgTwitterMetas = function(title, desc, url, image) {
+        setMeta('property', 'og:title', title);
+        setMeta('property', 'og:description', desc);
+        setMeta('property', 'og:url', url);
+        setMeta('property', 'og:image', image);
+        // ----- Twitter
+        var meta = document.head.querySelector('meta[property="twitter:card"]');
+        if (!meta) {
+            meta = document.createElement('meta');
+            meta.setAttribute('property', 'twitter:card');
+            meta.content = 'summary';
+            document.head.appendChild(meta);
+        }
+        setMeta('property', 'twitter:title', title);
+        setMeta('property', 'twitter:description', desc);
+        setMeta('property', 'twitter:url', url);
+        setMeta('property', 'twitter:image', image);
+    };
+
+    var addCanonical = function(link) {
+        if (lang && lang !== 'en') {
+            link += `/lang_${lang}`;
+        }
+        var canonical = document.createElement('link');
+        canonical.setAttribute('rel', 'canonical');
+        canonical.setAttribute('href', link);
+        document.head.appendChild(canonical);
+    };
+
+    var ucFirst = function(s) {
+        s = String(s || '');
+        return s.charAt(0).toUpperCase() + s.slice(1);
+    };
+
+    /* eslint-disable complexity */
+    this.addStrucuturedData = function(type, data) {
+
+        if (!type || !data) {
+            return;
+        }
+
+        var supportedTypes = ['Product', 'SoftwareApplication', 'FAQPage', 'NewsArticle', 'Organization'];
+        if (supportedTypes.indexOf(type) === -1) {
+            return;
+        }
+
+        if (
+            !(type === 'Product' && data.offers && data.description && data.name) &&
+            !(type === 'SoftwareApplication' && data.offers && data.operatingSystem && data.name) &&
+            !(type === 'FAQPage' && data.mainEntity && Object.keys(data.mainEntity).length) &&
+            !(type === 'NewsArticle' && data.headline && data.image && data.datePublished && data.dateModified) &&
+            !(type === 'Organization' && data.url && data.logo)
+        ) {
+            return;
+        }
+
+        var prepareMetaStruct = function() {
+            var structData = document.head.querySelector('script[type="application/ld+json"]');
+            if (!structData) {
+                structData = document.createElement('script');
+                structData.setAttribute('type', 'application/ld+json');
+                document.head.appendChild(structData);
+            }
+            return structData;
+        };
+
+        var metaStruct = prepareMetaStruct();
+        if (!metaStruct) {
+            return;
+        }
+
+        var structContent = Object.create(null);
+        structContent['@context'] = 'https://schema.org/';
+        structContent['@type'] = type;
+
+        if (type === 'Product') {
+            structContent['name'] = data.name;
+            structContent['image'] = [data.image || 'https://cms2.mega.nz/b41537c0eae056cfe5ab05902fca322b.png'];
+            structContent['description'] = data.description;
+            structContent['brand'] = { '@type': 'Brand', 'name': 'MEGA' };
+            structContent['offers'] = {
+                '@type': 'Offer',
+                'url': data.offers.url || '',
+                'priceCurrency': 'EUR',
+                'price': data.offers.price
+            };
+
+        }
+        else if (type === 'SoftwareApplication') {
+            structContent['name'] = data.name;
+            structContent['operatingSystem'] = data.operatingSystem;
+            if (data.applicationCategory) {
+                structContent['applicationCategory'] = data.applicationCategory;
+            }
+            structContent['offers'] = {
+                '@type': 'Offer',
+                'priceCurrency': 'EUR',
+                'price': data.offers.price
+            };
+        }
+        else if (type === 'FAQPage') {
+            var mainE = [];
+            for (var entity in data.mainEntity) {
+                if (data.mainEntity[entity]) {
+                    var temp = {
+                        '@type': 'Question',
+                        'name': entity,
+                        'acceptedAnswer': {
+                            '@type': 'Answer',
+                            'text': data.mainEntity[entity]
+                        }
+                    };
+                    mainE.push(temp);
+                }
+            }
+            if (mainE.length) {
+                structContent['mainEntity'] = mainE;
+            }
+            else {
+                document.head.removeChild(metaStruct);
+                return;
+            }
+        }
+        else if (type === 'NewsArticle') {
+            structContent['headline'] = data.headline;
+            structContent['image'] = [data.image];
+            structContent['datePublished'] = data.datePublished;
+            structContent['dateModified'] = data.dateModified;
+        }
+        else if (type === 'Organization') {
+            structContent['url'] = data.url;
+            structContent['logo'] = data.logo;
+        }
+        else {
+            return;
+        }
+        metaStruct.textContent = JSON.stringify(structContent, null, 3);
+    };
+
+    this.disableBots = function() {
+        var metaRobots = document.head.querySelector('meta[name="robots"]');
+        if (!metaRobots) {
+            metaRobots = document.createElement('meta');
+            document.head.appendChild(metaRobots);
+        }
+        metaRobots.name = 'robots';
+        metaRobots.content = 'noindex';
+    };
+
+    /**
+     * Get Page meta tags.
+     * @param {String} page     Page name
+     * @returns {Object}        Object contains needed tags
+     */
+    this.getPageMetaTags = function(page) {
+        var mTags = Object.create(null);
+        var metaRobots = document.head.querySelector('meta[name="robots"]');
+        if (metaRobots) {
+            document.head.removeChild(metaRobots);
+        }
+        var metaCanonical = document.head.querySelector('link[rel="canonical"]');
+        if (metaCanonical) {
+            document.head.removeChild(metaCanonical);
+        }
+        var metaStruct = document.head.querySelector('script[type="application/ld+json"]');
+        if (metaStruct) {
+            document.head.removeChild(metaStruct);
+        }
+
+        if (page === 'bird') {
+            mTags.en_title = 'MEGAbird - MEGA';
+            mTags.en_desc = 'Send large files by email through MEGA';
+            mTags.mega_title = l[23969] || mTags.en_title;
+            mTags.mega_desc = l[20931] || mTags.en_desc;
+        }
+        else if (page === 'pro' || page.substr(0, 6) === 'propay') {
+            mTags.en_title = 'Compare Plans and Pricing - MEGA';
+            mTags.en_desc = 'Compare MEGA\'s pricing plans. Get 16% off if you purchase an annual plan. ' +
+                'Start using MEGA\'s secure cloud storage and fast transfers today.';
+            mTags.mega_title = l[23971] || mTags.en_title;
+            mTags.mega_desc = l[23972] || mTags.en_desc;
+            mTags.image = 'https://cms2.mega.nz/559d084a50ad7283acb6f1c433136952.png';
+        }
+        else if (page === 'register') {
+            mTags.en_title = 'Create Your Account - MEGA';
+            mTags.en_desc = 'Get started with MEGA, the world\'s largest fully-featured free cloud storage and ' +
+                'communications provider with secure, user-controlled end-to-end encryption.';
+            mTags.mega_title = l[23973] || mTags.en_title;
+            mTags.mega_desc = l[23974] || mTags.en_desc;
+        }
+        else if (page === 'login') {
+            mTags.en_title = 'Login - MEGA';
+            mTags.en_desc = 'Log in to your MEGA account. Access the world\'s most trusted, protected cloud storage.';
+            mTags.mega_title = l[23975] || mTags.en_title;
+            mTags.mega_desc = l.mtags_desc_login || mTags.en_desc;
+        }
+        else if (page === 'recovery') {
+            mTags.en_title = 'Recovery - MEGA';
+            mTags.en_desc = 'Forgot your MEGA password? Start your recovery process here.';
+            mTags.mega_title = l[23976] || mTags.en_title;
+            mTags.mega_desc = l[23977] || mTags.en_desc;
+        }
+        else if (page === 'disputenotice') {
+            mTags.en_title = 'Copyright Counter-Notification - MEGA';
+            mTags.en_desc = 'Copyright Counter-Notification';
+            mTags.mega_title = l[23987] || mTags.en_title;
+            mTags.mega_desc = l[8789] || mTags.en_desc;
+        }
+        else if (page === 'registerb') {
+            mTags.en_title = 'Business Account - MEGA';
+            mTags.en_desc = 'With our user-controlled end-to-end encryption, your data and communications have never ' +
+                'been safer. MEGA is the secure solution for your business.';
+            mTags.mega_title = l[24012] || mTags.en_title;
+            mTags.mega_desc = l.mtags_desc_registerb || mTags.en_desc;
+        }
+        else if (page === 'cookie') {
+            mTags.mega_title = 'Cookie Policy - MEGA';
+            mTags.mega_desc = 'Our Cookie Policy explains what types of cookies we use ' +
+                'and what we do with the information we collect.';
+        }
+        else if (typeof Object(window.dlmanager).isStreaming === 'object') {
+            mTags.mega_title = dlmanager.isStreaming._megaNode.name + ' - MEGA';
+            mTags.dynamic = true;
+        }
+        else if (page === 'recoveryparkchangepass') {
+            mTags.mega_title = 'Park Change Password - MEGA';
+            stopBots(metaRobots);
+        }
+        else if (page === 'recoverykeychangepass') {
+            mTags.mega_title = 'Key Change Password - MEGA';
+            stopBots(metaRobots);
+        }
+        else if (page === 'recoveryenterkey') {
+            mTags.mega_title = 'Recovery Key - MEGA';
+            stopBots(metaRobots);
+        }
+        else if (page === 'recoverybypark') {
+            mTags.mega_title = 'Park Recovery - MEGA';
+            stopBots(metaRobots);
+        }
+        else if (page === 'recoverybykey') {
+            mTags.mega_title = 'Recover by Key - MEGA';
+            stopBots(metaRobots);
+        }
+        else if (page === 'wiretransfer') {
+            mTags.mega_title = 'Wire Transfer - MEGA';
+            stopBots(metaRobots);
+        }
+        else if (page === 'twofactor') {
+            mTags.mega_title = 'Two Factor - MEGA';
+            stopBots(metaRobots);
+        }
+        else if (page.substr(0, 11) === 'emailverify') {
+            mTags.mega_title = 'Email Verify - MEGA';
+            mTags.mega_desc = 'Email verification';
+            stopBots(metaRobots, true);
+        }
+        else if (page === 'businessinvite') {
+            mTags.mega_title = 'Business Invite - MEGA';
+            stopBots(metaRobots);
+        }
+        else if (page === 'businesssignup') {
+            mTags.mega_title = 'Business Signup - MEGA';
+            stopBots(metaRobots);
+        }
+        else if (page === 'achievements') {
+            mTags.en_title = 'Achievements - MEGA';
+            mTags.en_desc = 'Free additional cloud storage - 5 GB per achievement, valid for 365 days.';
+            mTags.mega_title = l.achievement_meta_title || mTags.en_title;
+            mTags.mega_desc = l.achievement_meta_desc || mTags.en_desc;
+        }
+        else if (page === 'support') {
+            mTags.en_title = 'Support - MEGA';
+            mTags.en_desc = 'Get support';
+            mTags.mega_title = l.support_meta_tag || mTags.en_title;
+            mTags.mega_desc = l[516] || mTags.en_desc;
+        }
+        else if (page && (mTags.excluded = isPageExcluded(page))) {
+            mTags.mega_title = page.charAt(0).toUpperCase() + page.slice(1) + ' - MEGA';
+            stopBots(metaRobots);
+        }
+        else {
+            mTags.mega_title = 'MEGA';
+            stopBots(metaRobots);
+        }
+        if (!mTags.mega_desc) {
+            mTags.mega_desc = l[24023] || mega.whoami;
+            if (!isPageExcluded(page) && !is_fm() && !is_extension) {
+                if (d) {
+                    console.error('A page without Description. Please handle. Page: ' + page);
+                }
+                eventlog(99736, `page without desc: ${String(page).split('#')[0]}`);
+            }
+        }
+
+        mTags.image = mTags.image || 'https://cms2.mega.nz/b41537c0eae056cfe5ab05902fca322b.png';
+        insertOgTwitterMetas(
+            mTags.mega_title,
+            mTags.mega_desc,
+            getBaseUrl() + (page && page !== 'start' ? '/' + page : ''),
+            mTags.image
+        );
+
+        mTags.page = page;
+        this.lastSetMetaTags = mTags;
+
+        return mTags;
+    };
+    /* eslint-enable complexity */
+
+    this.checkPageMatchesURL = function() {
+        if (page !== (getCleanSitePath() || 'start')) {
+            var metaRobots = document.head.querySelector('meta[name="robots"]');
+            if (!metaRobots) {
+                stopBots(metaRobots);
+            }
+        }
+    };
+};
+
+/*!
+ * verge 1.9.1+201402130803
+ * https://github.com/ryanve/verge
+ * MIT License 2013 Ryan Van Etten
+ */
+
+(function(root, name, make) {
+  if (typeof module != 'undefined' && module['exports']) module['exports'] = make();
+  else root[name] = make();
+}(this, 'verge', function() {
+
+  var xports = {}
+    , win = typeof window != 'undefined' && window
+    , doc = typeof document != 'undefined' && document
+    , docElem = doc && doc.documentElement
+    , matchMedia = win['matchMedia'] || win['msMatchMedia']
+    , mq = matchMedia ? function(q) {
+        return !!matchMedia.call(win, q).matches;
+      } : function() {
+        return false;
+      }
+    , viewportW = xports['viewportW'] = function() {
+        var a = docElem['clientWidth'], b = win['innerWidth'];
+        return a < b ? b : a;
+      }
+    , viewportH = xports['viewportH'] = function() {
+        var a = docElem['clientHeight'], b = win['innerHeight'];
+        return a < b ? b : a;
+      };
+  
+  /** 
+   * Test if a media query is active. Like Modernizr.mq
+   * @since 1.6.0
+   * @return {boolean}
+   */  
+  xports['mq'] = mq;
+
+  /** 
+   * Normalized matchMedia
+   * @since 1.6.0
+   * @return {MediaQueryList|Object}
+   */ 
+  xports['matchMedia'] = matchMedia ? function() {
+    // matchMedia must be binded to window
+    return matchMedia.apply(win, arguments);
+  } : function() {
+    // Gracefully degrade to plain object
+    return {};
+  };
+
+  /**
+   * @since 1.8.0
+   * @return {{width:number, height:number}}
+   */
+  function viewport() {
+    return {'width':viewportW(), 'height':viewportH()};
+  }
+  xports['viewport'] = viewport;
+  
+  /** 
+   * Cross-browser window.scrollX
+   * @since 1.0.0
+   * @return {number}
+   */
+  xports['scrollX'] = function() {
+    return win.pageXOffset || docElem.scrollLeft; 
+  };
+
+  /** 
+   * Cross-browser window.scrollY
+   * @since 1.0.0
+   * @return {number}
+   */
+  xports['scrollY'] = function() {
+    return win.pageYOffset || docElem.scrollTop; 
+  };
+
+  /**
+   * @param {{top:number, right:number, bottom:number, left:number}} coords
+   * @param {number=} cushion adjustment
+   * @return {Object}
+   */
+  function calibrate(coords, cushion) {
+    var o = {};
+    cushion = +cushion || 0;
+    o['width'] = (o['right'] = coords['right'] + cushion) - (o['left'] = coords['left'] - cushion);
+    o['height'] = (o['bottom'] = coords['bottom'] + cushion) - (o['top'] = coords['top'] - cushion);
+    return o;
+  }
+
+  /**
+   * Cross-browser element.getBoundingClientRect plus optional cushion.
+   * Coords are relative to the top-left corner of the viewport.
+   * @since 1.0.0
+   * @param {Element|Object} el element or stack (uses first item)
+   * @param {number=} cushion +/- pixel adjustment amount
+   * @return {Object|boolean}
+   */
+  function rectangle(el, cushion) {
+    el = el && !el.nodeType ? el[0] : el;
+    if (!el || 1 !== el.nodeType) return false;
+    return calibrate(el.getBoundingClientRect(), cushion);
+  }
+  xports['rectangle'] = rectangle;
+
+  /**
+   * Get the viewport aspect ratio (or the aspect ratio of an object or element)
+   * @since 1.7.0
+   * @param {(Element|Object)=} o optional object with width/height props or methods
+   * @return {number}
+   * @link http://w3.org/TR/css3-mediaqueries/#orientation
+   */
+  function aspect(o) {
+    o = null == o ? viewport() : 1 === o.nodeType ? rectangle(o) : o;
+    var h = o['height'], w = o['width'];
+    h = typeof h == 'function' ? h.call(o) : h;
+    w = typeof w == 'function' ? w.call(o) : w;
+    return w/h;
+  }
+  xports['aspect'] = aspect;
+
+  /**
+   * Test if an element is in the same x-axis section as the viewport.
+   * @since 1.0.0
+   * @param {Element|Object} el
+   * @param {number=} cushion
+   * @return {boolean}
+   */
+  xports['inX'] = function(el, cushion) {
+    var r = rectangle(el, cushion);
+    return !!r && r.right >= 0 && r.left <= viewportW();
+  };
+
+  /**
+   * Test if an element is in the same y-axis section as the viewport.
+   * @since 1.0.0
+   * @param {Element|Object} el
+   * @param {number=} cushion
+   * @return {boolean}
+   */
+  xports['inY'] = function(el, cushion) {
+    var r = rectangle(el, cushion);
+    return !!r && r.bottom >= 0 && r.top <= viewportH();
+  };
+
+  /**
+   * Test if an element is in the viewport.
+   * @since 1.0.0
+   * @param {Element|Object} el
+   * @param {number=} cushion
+   * @return {boolean}
+   */
+  xports['inViewport'] = function(el, cushion) {
+    // Equiv to `inX(el, cushion) && inY(el, cushion)` but just manually do both 
+    // to avoid calling rectangle() twice. It gzips just as small like this.
+    var r = rectangle(el, cushion);
+    return !!r && r.bottom >= 0 && r.right >= 0 && r.top <= viewportH() && r.left <= viewportW();
+  };
+
+  return xports;
+}));
+
+/*!
+ * perfect-scrollbar v1.5.7 - mega.nz build.
+ * Copyright 2024 Hyunje Jun, MDBootstrap and Contributors
+ * Licensed under MIT
+ */
+
+(function (global, factory) {
+  typeof exports === 'object' && typeof module !== 'undefined' ? module.exports = factory() :
+  typeof define === 'function' && define.amd ? define(factory) :
+  (global = typeof globalThis !== 'undefined' ? globalThis : global || self, global.PerfectScrollbar = factory());
+})(this, (function () { 'use strict';
+
+  function get(element) {
+    return getComputedStyle(element);
+  }
+
+  function set(element, obj) {
+    for (const key in obj) {
+      let val = obj[key];
+      if (typeof val === 'number') {
+        val = `${val}px`;
+      }
+      element.style[key] = val;
+    }
+    return element;
+  }
+
+  function div(className) {
+    const div = document.createElement('div');
+    div.className = className;
+    return div;
+  }
+
+  const elMatches =
+    typeof Element !== 'undefined' &&
+    (Element.prototype.matches ||
+      Element.prototype.webkitMatchesSelector ||
+      Element.prototype.mozMatchesSelector ||
+      Element.prototype.msMatchesSelector);
+
+  function matches(element, query) {
+    if (!elMatches) {
+      throw new Error('No element matching method supported');
+    }
+
+    return elMatches.call(element, query);
+  }
+
+  function remove(element) {
+    if (element.remove) {
+      element.remove();
+    } else {
+      if (element.parentNode) {
+        element.parentNode.removeChild(element);
+      }
+    }
+  }
+
+  function queryChildren(element, selector) {
+    return Array.prototype.filter.call(element.children, (child) =>
+      matches(child, selector)
+    );
+  }
+
+  const cls = {
+    main: 'ps',
+    rtl: 'ps__rtl',
+    element: {
+      thumb: (x) => `ps__thumb-${x}`,
+      rail: (x) => `ps__rail-${x}`,
+      consuming: 'ps__child--consume',
+    },
+    state: {
+      focus: 'ps--focus',
+      clicking: 'ps--clicking',
+      active: (x) => `ps--active-${x}`,
+      scrolling: (x) => `ps--scrolling-${x}`,
+    },
+  };
+
+  /*
+   * Helper methods
+   */
+  const scrollingClassTimeout = { x: null, y: null };
+
+  function addScrollingClass(i, x) {
+    const classList = i.element.classList;
+    const className = cls.state.scrolling(x);
+
+    if (classList.contains(className)) {
+      clearTimeout(scrollingClassTimeout[x]);
+    } else {
+      classList.add(className);
+    }
+  }
+
+  function removeScrollingClass(i, x) {
+    scrollingClassTimeout[x] = setTimeout(
+      () => i.isAlive && i.element.classList.remove(cls.state.scrolling(x)),
+      i.settings.scrollingThreshold
+    );
+  }
+
+  function setScrollingClassInstantly(i, x) {
+    addScrollingClass(i, x);
+    removeScrollingClass(i, x);
+  }
+
+  class EventElement {
+    constructor(element) {
+      this.element = element;
+      this.handlers = {};
+    }
+
+    bind(eventName, handler) {
+      if (typeof this.handlers[eventName] === 'undefined') {
+        this.handlers[eventName] = [];
+      }
+      this.handlers[eventName].push(handler);
+      this.element.addEventListener(
+        eventName,
+        handler,
+        EventElement.eventListenerOptions
+      );
+    }
+
+    unbind(eventName, target) {
+      this.handlers[eventName] = this.handlers[eventName].filter((handler) => {
+        if (target && handler !== target) {
+          return true;
+        }
+        this.element.removeEventListener(
+          eventName,
+          handler,
+          EventElement.eventListenerOptions
+        );
+        return false;
+      });
+    }
+
+    unbindAll() {
+      for (const name in this.handlers) {
+        this.unbind(name);
+      }
+    }
+
+    get isEmpty() {
+      return Object.keys(this.handlers).every(
+        (key) => this.handlers[key].length === 0
+      );
+    }
+  }
+
+  EventElement.eventListenerOptions = Object.assign(
+    { passive: false },
+    window.evPsOptions
+  );
+
+  class EventManager {
+    constructor() {
+      this.eventElements = [];
+    }
+
+    eventElement(element) {
+      let ee = this.eventElements.filter((ee) => ee.element === element)[0];
+      if (!ee) {
+        ee = new EventElement(element);
+        this.eventElements.push(ee);
+      }
+      return ee;
+    }
+
+    bind(element, eventName, handler) {
+      this.eventElement(element).bind(eventName, handler);
+    }
+
+    unbind(element, eventName, handler) {
+      const ee = this.eventElement(element);
+      ee.unbind(eventName, handler);
+
+      if (ee.isEmpty) {
+        // remove
+        this.eventElements.splice(this.eventElements.indexOf(ee), 1);
+      }
+    }
+
+    unbindAll() {
+      this.eventElements.forEach((e) => e.unbindAll());
+      this.eventElements = [];
+    }
+
+    once(element, eventName, handler) {
+      const ee = this.eventElement(element);
+      const onceHandler = (evt) => {
+        ee.unbind(eventName, onceHandler);
+        handler(evt);
+      };
+      ee.bind(eventName, onceHandler);
+    }
+
+    preventDefault(ev, stop) {
+      if (stop !== false) {
+        ev.stopPropagation();
+      }
+      if (!EventElement.eventListenerOptions.passive) {
+        ev.preventDefault();
+      }
+    }
+  }
+
+  function createEvent(name) {
+    if (typeof window.CustomEvent === 'function') {
+      return new CustomEvent(name);
+    } else {
+      const evt = document.createEvent('CustomEvent');
+      evt.initCustomEvent(name, false, false, undefined);
+      return evt;
+    }
+  }
+
+  function processScrollDiff (
+    i,
+    axis,
+    diff,
+    useScrollingClass = true,
+    forceFireReachEvent = false
+  ) {
+    let fields;
+    if (axis === 'top') {
+      fields = [
+        'contentHeight',
+        'containerHeight',
+        'scrollTop',
+        'y',
+        'up',
+        'down',
+      ];
+    } else if (axis === 'left') {
+      fields = [
+        'contentWidth',
+        'containerWidth',
+        'scrollLeft',
+        'x',
+        'left',
+        'right',
+      ];
+    } else {
+      throw new Error('A proper axis should be provided');
+    }
+
+    processScrollDiff$1(i, diff, fields, useScrollingClass, forceFireReachEvent);
+  }
+
+  function processScrollDiff$1(
+    i,
+    diff,
+    [contentHeight, containerHeight, scrollTop, y, up, down],
+    useScrollingClass = true,
+    forceFireReachEvent = false
+  ) {
+    const element = i.element;
+
+    // reset reach
+    i.reach[y] = null;
+
+    // 1 for subpixel rounding
+    if (element[scrollTop] < 1) {
+      i.reach[y] = 'start';
+    }
+
+    // 1 for subpixel rounding
+    if (element[scrollTop] > i[contentHeight] - i[containerHeight] - 1) {
+      i.reach[y] = 'end';
+    }
+
+    if (diff) {
+      element.dispatchEvent(createEvent(`ps-scroll-${y}`));
+
+      if (diff < 0) {
+        element.dispatchEvent(createEvent(`ps-scroll-${up}`));
+      } else if (diff > 0) {
+        element.dispatchEvent(createEvent(`ps-scroll-${down}`));
+      }
+
+      if (useScrollingClass) {
+        setScrollingClassInstantly(i, y);
+      }
+    }
+
+    if (i.reach[y] && (diff || forceFireReachEvent)) {
+      element.dispatchEvent(createEvent(`ps-${y}-reach-${i.reach[y]}`));
+    }
+  }
+
+  function toInt(x) {
+    return parseInt(x, 10) || 0;
+  }
+
+  function isEditable(el) {
+    return (
+      matches(el, 'input,[contenteditable]') ||
+      matches(el, 'select,[contenteditable]') ||
+      matches(el, 'textarea,[contenteditable]') ||
+      matches(el, 'button,[contenteditable]')
+    );
+  }
+
+  function outerWidth(element) {
+    const styles = get(element);
+    return (
+      toInt(styles.width) +
+      toInt(styles.paddingLeft) +
+      toInt(styles.paddingRight) +
+      toInt(styles.borderLeftWidth) +
+      toInt(styles.borderRightWidth)
+    );
+  }
+
+  const env = {
+    isWebKit:
+      typeof document !== 'undefined' &&
+      'WebkitAppearance' in document.documentElement.style,
+    supportsTouch:
+      typeof window !== 'undefined' &&
+      ('ontouchstart' in window ||
+        ('maxTouchPoints' in window.navigator &&
+          window.navigator.maxTouchPoints > 0) ||
+        (window.DocumentTouch && document instanceof window.DocumentTouch)),
+    supportsIePointer:
+      typeof navigator !== 'undefined' && navigator.msMaxTouchPoints,
+    isChrome:
+      typeof navigator !== 'undefined' &&
+      /Chrome/i.test(navigator && navigator.userAgent),
+  };
+
+  function updateGeometry (i) {
+    const element = i.element;
+    const roundedScrollTop = Math.floor(element.scrollTop);
+    const rect = element.getBoundingClientRect();
+
+    i.containerWidth = Math.round(rect.width);
+    i.containerHeight = Math.round(rect.height);
+
+    i.contentWidth = element.scrollWidth;
+    i.contentHeight = element.scrollHeight;
+
+    if (!element.contains(i.scrollbarXRail)) {
+      // clean up and append
+      queryChildren(element, cls.element.rail('x')).forEach((el) =>
+        remove(el)
+      );
+      element.appendChild(i.scrollbarXRail);
+    }
+    if (!element.contains(i.scrollbarYRail)) {
+      // clean up and append
+      queryChildren(element, cls.element.rail('y')).forEach((el) =>
+        remove(el)
+      );
+      element.appendChild(i.scrollbarYRail);
+    }
+
+    if (
+      !i.settings.suppressScrollX &&
+      i.containerWidth + i.settings.scrollXMarginOffset < i.contentWidth
+    ) {
+      i.scrollbarXActive = true;
+      i.railXWidth = i.containerWidth - i.railXMarginWidth;
+      i.railXRatio = i.containerWidth / i.railXWidth;
+      i.scrollbarXWidth = getThumbSize(
+        i,
+        toInt((i.railXWidth * i.containerWidth) / i.contentWidth)
+      );
+      i.scrollbarXLeft = toInt(
+        ((i.negativeScrollAdjustment + element.scrollLeft) *
+          (i.railXWidth - i.scrollbarXWidth)) /
+          (i.contentWidth - i.containerWidth)
+      );
+    } else {
+      i.scrollbarXActive = false;
+    }
+
+    if (
+      !i.settings.suppressScrollY &&
+      i.containerHeight + i.settings.scrollYMarginOffset < i.contentHeight
+    ) {
+      i.scrollbarYActive = true;
+      i.railYHeight = i.containerHeight - i.railYMarginHeight;
+      i.railYRatio = i.containerHeight / i.railYHeight;
+      i.scrollbarYHeight = getThumbSize(
+        i,
+        toInt((i.railYHeight * i.containerHeight) / i.contentHeight)
+      );
+      i.scrollbarYTop = toInt(
+        (roundedScrollTop * (i.railYHeight - i.scrollbarYHeight)) /
+          (i.contentHeight - i.containerHeight)
+      );
+    } else {
+      i.scrollbarYActive = false;
+    }
+
+    if (i.scrollbarXLeft >= i.railXWidth - i.scrollbarXWidth) {
+      i.scrollbarXLeft = i.railXWidth - i.scrollbarXWidth;
+    }
+    if (i.scrollbarYTop >= i.railYHeight - i.scrollbarYHeight) {
+      i.scrollbarYTop = i.railYHeight - i.scrollbarYHeight;
+    }
+
+    updateCss(element, i);
+
+    if (i.scrollbarXActive) {
+      element.classList.add(cls.state.active('x'));
+    } else {
+      element.classList.remove(cls.state.active('x'));
+      i.scrollbarXWidth = 0;
+      i.scrollbarXLeft = 0;
+      element.scrollLeft = i.isRtl === true ? i.contentWidth : 0;
+    }
+    if (i.scrollbarYActive) {
+      element.classList.add(cls.state.active('y'));
+    } else {
+      element.classList.remove(cls.state.active('y'));
+      i.scrollbarYHeight = 0;
+      i.scrollbarYTop = 0;
+      element.scrollTop = 0;
+    }
+  }
+
+  function getThumbSize(i, thumbSize) {
+    if (i.settings.minScrollbarLength) {
+      thumbSize = Math.max(thumbSize, i.settings.minScrollbarLength);
+    }
+    if (i.settings.maxScrollbarLength) {
+      thumbSize = Math.min(thumbSize, i.settings.maxScrollbarLength);
+    }
+    return thumbSize;
+  }
+
+  function updateCss(element, i) {
+    const xRailOffset = { width: i.railXWidth };
+    const roundedScrollTop = Math.floor(element.scrollTop);
+
+    if (i.isRtl) {
+      xRailOffset.left =
+        i.negativeScrollAdjustment +
+        element.scrollLeft +
+        i.containerWidth -
+        i.contentWidth;
+    } else {
+      xRailOffset.left = element.scrollLeft;
+    }
+    if (i.isScrollbarXUsingBottom) {
+      xRailOffset.bottom = i.scrollbarXBottom - roundedScrollTop;
+    } else {
+      xRailOffset.top = i.scrollbarXTop + roundedScrollTop;
+    }
+    set(i.scrollbarXRail, xRailOffset);
+
+    const yRailOffset = { top: roundedScrollTop, height: i.railYHeight };
+    if (i.isScrollbarYUsingRight) {
+      if (i.isRtl) {
+        yRailOffset.right =
+          i.contentWidth -
+          (i.negativeScrollAdjustment + element.scrollLeft) -
+          i.scrollbarYRight -
+          i.scrollbarYOuterWidth -
+          9;
+      } else {
+        yRailOffset.right = i.scrollbarYRight - element.scrollLeft;
+      }
+    } else {
+      if (i.isRtl) {
+        yRailOffset.left =
+          i.negativeScrollAdjustment +
+          element.scrollLeft +
+          i.containerWidth * 2 -
+          i.contentWidth -
+          i.scrollbarYLeft -
+          i.scrollbarYOuterWidth;
+      } else {
+        yRailOffset.left = i.scrollbarYLeft + element.scrollLeft;
+      }
+    }
+    set(i.scrollbarYRail, yRailOffset);
+
+    set(i.scrollbarX, {
+      left: i.scrollbarXLeft,
+      width: i.scrollbarXWidth - i.railBorderXWidth,
+    });
+    set(i.scrollbarY, {
+      top: i.scrollbarYTop,
+      height: i.scrollbarYHeight - i.railBorderYWidth,
+    });
+  }
+
+  function clickRail (i) {
+    const element = i.element;
+
+    i.event.bind(i.scrollbarY, 'mousedown', (e) => e.stopPropagation());
+    i.event.bind(i.scrollbarYRail, 'mousedown', (e) => {
+      if (element.classList.contains('ps-disabled')) {
+        return;
+      }
+      const positionTop =
+        e.pageY -
+        window.pageYOffset -
+        i.scrollbarYRail.getBoundingClientRect().top;
+      const direction = positionTop > i.scrollbarYTop ? 1 : -1;
+
+      i.element.scrollTop += direction * i.containerHeight;
+      updateGeometry(i);
+
+      e.stopPropagation();
+    });
+
+    i.event.bind(i.scrollbarX, 'mousedown', (e) => e.stopPropagation());
+    i.event.bind(i.scrollbarXRail, 'mousedown', (e) => {
+      if (element.classList.contains('ps-disabled')) {
+        return;
+      }
+      const positionLeft =
+        e.pageX -
+        window.pageXOffset -
+        i.scrollbarXRail.getBoundingClientRect().left;
+      const direction = positionLeft > i.scrollbarXLeft ? 1 : -1;
+
+      i.element.scrollLeft += direction * i.containerWidth;
+      updateGeometry(i);
+
+      e.stopPropagation();
+    });
+  }
+
+  function dragThumb (i) {
+    bindMouseScrollHandler(i, [
+      'containerWidth',
+      'contentWidth',
+      'pageX',
+      'railXWidth',
+      'scrollbarX',
+      'scrollbarXWidth',
+      'scrollLeft',
+      'x',
+      'scrollbarXRail',
+    ]);
+    bindMouseScrollHandler(i, [
+      'containerHeight',
+      'contentHeight',
+      'pageY',
+      'railYHeight',
+      'scrollbarY',
+      'scrollbarYHeight',
+      'scrollTop',
+      'y',
+      'scrollbarYRail',
+    ]);
+  }
+
+  function bindMouseScrollHandler(
+    i,
+    [
+      containerHeight,
+      contentHeight,
+      pageY,
+      railYHeight,
+      scrollbarY,
+      scrollbarYHeight,
+      scrollTop,
+      y,
+      scrollbarYRail,
+    ]
+  ) {
+    const element = i.element;
+
+    let startingScrollTop = null;
+    let startingMousePageY = null;
+    let scrollBy = null;
+
+    function mouseMoveHandler(e) {
+      const py = e.touches && e.touches[0] ? e.touches[0].pageY : e[pageY];
+
+      element[scrollTop] =
+        startingScrollTop + scrollBy * (py - startingMousePageY);
+      addScrollingClass(i, y);
+      updateGeometry(i);
+
+      e.stopPropagation();
+      if (e.type.startsWith('touch') && e.changedTouches.length > 1) {
+        i.event.preventDefault(e, false);
+      }
+    }
+
+    function mouseUpHandler() {
+      removeScrollingClass(i, y);
+      i[scrollbarYRail].classList.remove(cls.state.clicking);
+      i.event.unbind(i.ownerDocument, 'mousemove', mouseMoveHandler);
+    }
+
+    function bindMoves(e, touchMode) {
+      if (element.classList.contains('ps-disabled')) {
+        return;
+      }
+      startingScrollTop = element[scrollTop];
+      startingMousePageY =
+        touchMode && e.touches && e.touches[0] ? e.touches[0].pageY : e[pageY];
+
+      scrollBy =
+        (i[contentHeight] - i[containerHeight]) /
+        (i[railYHeight] - i[scrollbarYHeight]);
+      if (!touchMode) {
+        i.event.bind(i.ownerDocument, 'mousemove', mouseMoveHandler);
+        i.event.once(i.ownerDocument, 'mouseup', mouseUpHandler);
+        i.event.preventDefault(e, false);
+      } else {
+        i.event.bind(i.ownerDocument, 'touchmove', mouseMoveHandler);
+      }
+
+      i[scrollbarYRail].classList.add(cls.state.clicking);
+
+      e.stopPropagation();
+    }
+
+    i.event.bind(i[scrollbarY], 'mousedown', (e) => {
+      bindMoves(e);
+    });
+    i.event.bind(i[scrollbarY], 'touchstart', (e) => {
+      bindMoves(e, true);
+    });
+  }
+
+  function keyboard (i) {
+    const element = i.element;
+
+    const elementHovered = () => matches(element, ':hover');
+    const scrollbarFocused = () =>
+      matches(i.scrollbarX, ':focus') || matches(i.scrollbarY, ':focus');
+
+    function shouldPreventDefault(deltaX, deltaY) {
+      const scrollTop = Math.floor(element.scrollTop);
+      if (deltaX === 0) {
+        if (!i.scrollbarYActive) {
+          return false;
+        }
+        if (
+          (scrollTop === 0 && deltaY > 0) ||
+          (scrollTop >= i.contentHeight - i.containerHeight && deltaY < 0)
+        ) {
+          return !i.settings.wheelPropagation;
+        }
+      }
+
+      const scrollLeft = element.scrollLeft;
+      if (deltaY === 0) {
+        if (!i.scrollbarXActive) {
+          return false;
+        }
+        if (
+          (scrollLeft === 0 && deltaX < 0) ||
+          (scrollLeft >= i.contentWidth - i.containerWidth && deltaX > 0)
+        ) {
+          return !i.settings.wheelPropagation;
+        }
+      }
+      return true;
+    }
+
+    i.event.bind(i.ownerDocument, 'keydown', (e) => {
+      if (element.classList.contains('ps-disabled')) {
+        return;
+      }
+      if (
+        (e.isDefaultPrevented && e.isDefaultPrevented()) ||
+        e.defaultPrevented
+      ) {
+        return;
+      }
+
+      if (!elementHovered() && !scrollbarFocused()) {
+        return;
+      }
+
+      const _getActiveElement = tryCatch(function (node, tryDoc) {
+        const docAE =
+          tryDoc !== false && tryCatch(() => document.activeElement)();
+        return (tryDoc && docAE) || (node && node.activeElement) || docAE || !1;
+      });
+
+      var activeElement = _getActiveElement(i.ownerDocument, true);
+      if (activeElement) {
+        if (activeElement.tagName === 'IFRAME') {
+          activeElement = _getActiveElement(activeElement.contentDocument, false);
+        } else {
+          // go deeper if element is a webcomponent
+          while (activeElement.shadowRoot) {
+            activeElement =
+              _getActiveElement(activeElement.shadowRoot, false) || !1;
+          }
+        }
+        if (activeElement && isEditable(activeElement)) {
+          return;
+        }
+      }
+
+      let deltaX = 0;
+      let deltaY = 0;
+
+      switch (e.which) {
+        case 37: // left
+          if (e.metaKey) {
+            deltaX = -i.contentWidth;
+          } else if (e.altKey) {
+            deltaX = -i.containerWidth;
+          } else {
+            deltaX = -30;
+          }
+          break;
+        case 38: // up
+          if (e.metaKey) {
+            deltaY = i.contentHeight;
+          } else if (e.altKey) {
+            deltaY = i.containerHeight;
+          } else {
+            deltaY = 30;
+          }
+          break;
+        case 39: // right
+          if (e.metaKey) {
+            deltaX = i.contentWidth;
+          } else if (e.altKey) {
+            deltaX = i.containerWidth;
+          } else {
+            deltaX = 30;
+          }
+          break;
+        case 40: // down
+          if (e.metaKey) {
+            deltaY = -i.contentHeight;
+          } else if (e.altKey) {
+            deltaY = -i.containerHeight;
+          } else {
+            deltaY = -30;
+          }
+          break;
+        case 32: // space bar
+          if (e.shiftKey) {
+            deltaY = i.containerHeight;
+          } else {
+            deltaY = -i.containerHeight;
+          }
+          break;
+        case 33: // page up
+          deltaY = i.containerHeight;
+          break;
+        case 34: // page down
+          deltaY = -i.containerHeight;
+          break;
+        case 36: // home
+          deltaY = i.contentHeight;
+          break;
+        case 35: // end
+          deltaY = -i.contentHeight;
+          break;
+        default:
+          return;
+      }
+
+      if (i.settings.suppressScrollX && deltaX !== 0) {
+        return;
+      }
+      if (i.settings.suppressScrollY && deltaY !== 0) {
+        return;
+      }
+
+      element.scrollTop -= deltaY;
+      element.scrollLeft += deltaX;
+      updateGeometry(i);
+
+      if (shouldPreventDefault(deltaX, deltaY)) {
+        i.event.preventDefault(e, false);
+      }
+    });
+  }
+
+  function wheel (i) {
+    const element = i.element;
+
+    function shouldPreventDefault(deltaX, deltaY) {
+      const roundedScrollTop = Math.floor(element.scrollTop);
+      const isTop = element.scrollTop === 0;
+      const isBottom =
+        roundedScrollTop + element.offsetHeight === element.scrollHeight;
+      const isLeft = element.scrollLeft === 0;
+      const isRight =
+        element.scrollLeft + element.offsetWidth === element.scrollWidth;
+
+      let hitsBound;
+
+      // pick axis with primary direction
+      if (Math.abs(deltaY) > Math.abs(deltaX)) {
+        hitsBound = isTop || isBottom;
+      } else {
+        hitsBound = isLeft || isRight;
+      }
+
+      return hitsBound ? !i.settings.wheelPropagation : true;
+    }
+
+    function getDeltaFromEvent(e) {
+      let deltaX = e.deltaX;
+      let deltaY = -1 * e.deltaY;
+
+      if (typeof deltaX === 'undefined' || typeof deltaY === 'undefined') {
+        // OS X Safari
+        deltaX = (-1 * e.wheelDeltaX) / 6;
+        deltaY = e.wheelDeltaY / 6;
+      }
+
+      if (e.deltaMode && e.deltaMode === 1) {
+        // Firefox in deltaMode 1: Line scrolling
+        deltaX *= 10;
+        deltaY *= 10;
+      }
+
+      if (deltaX !== deltaX && deltaY !== deltaY /* NaN checks */) {
+        // IE in some mouse drivers
+        deltaX = 0;
+        deltaY = e.wheelDelta;
+      }
+
+      if (e.shiftKey) {
+        // reverse axis with shift key
+        return [-deltaY, -deltaX];
+      }
+      return [deltaX, deltaY];
+    }
+
+    function shouldBeConsumedByChild(target, deltaX, deltaY) {
+      // FIXME: this is a workaround for <select> issue in FF and IE #571
+      if (!env.isWebKit && element.querySelector('select:focus')) {
+        return true;
+      }
+
+      if (!element.contains(target)) {
+        return false;
+      }
+
+      let cursor = target;
+
+      while (cursor && cursor !== element) {
+        if (cursor.classList.contains(cls.element.consuming)) {
+          return true;
+        }
+
+        const style = get(cursor);
+
+        // if deltaY && vertical scrollable
+        if (deltaY && style.overflowY.match(/(scroll|auto)/)) {
+          const maxScrollTop = cursor.scrollHeight - cursor.clientHeight;
+          if (maxScrollTop > 0) {
+            if (
+              (cursor.scrollTop > 0 && deltaY < 0) ||
+              (cursor.scrollTop < maxScrollTop && deltaY > 0)
+            ) {
+              return true;
+            }
+          }
+        }
+        // if deltaX && horizontal scrollable
+        if (deltaX && style.overflowX.match(/(scroll|auto)/)) {
+          const maxScrollLeft = cursor.scrollWidth - cursor.clientWidth;
+          if (maxScrollLeft > 0) {
+            if (
+              (cursor.scrollLeft > 0 && deltaX < 0) ||
+              (cursor.scrollLeft < maxScrollLeft && deltaX > 0)
+            ) {
+              return true;
+            }
+          }
+        }
+
+        cursor = cursor.parentNode;
+      }
+
+      return false;
+    }
+
+    function mousewheelHandler(e) {
+      if (element.classList.contains('ps-disabled')) {
+        return;
+      }
+      const [deltaX, deltaY] = getDeltaFromEvent(e);
+
+      if (shouldBeConsumedByChild(e.target, deltaX, deltaY)) {
+        return;
+      }
+
+      let shouldPrevent = false;
+      if (!i.settings.useBothWheelAxes) {
+        // deltaX will only be used for horizontal scrolling and deltaY will
+        // only be used for vertical scrolling - this is the default
+        element.scrollTop -= deltaY * i.settings.wheelSpeed;
+        element.scrollLeft += deltaX * i.settings.wheelSpeed;
+      } else if (i.scrollbarYActive && !i.scrollbarXActive) {
+        // only vertical scrollbar is active and useBothWheelAxes option is
+        // active, so let's scroll vertical bar using both mouse wheel axes
+        if (deltaY) {
+          element.scrollTop -= deltaY * i.settings.wheelSpeed;
+        } else {
+          element.scrollTop += deltaX * i.settings.wheelSpeed;
+        }
+        shouldPrevent = true;
+      } else if (i.scrollbarXActive && !i.scrollbarYActive) {
+        // useBothWheelAxes and only horizontal bar is active, so use both
+        // wheel axes for horizontal bar
+        if (deltaX) {
+          element.scrollLeft += deltaX * i.settings.wheelSpeed;
+        } else {
+          element.scrollLeft -= deltaY * i.settings.wheelSpeed;
+        }
+        shouldPrevent = true;
+      }
+
+      updateGeometry(i);
+
+      shouldPrevent = shouldPrevent || shouldPreventDefault(deltaX, deltaY);
+      if (shouldPrevent && !e.ctrlKey) {
+        i.event.preventDefault(e);
+      }
+    }
+
+    if (typeof window.onwheel !== 'undefined') {
+      i.event.bind(element, 'wheel', mousewheelHandler);
+    } else if (typeof window.onmousewheel !== 'undefined') {
+      i.event.bind(element, 'mousewheel', mousewheelHandler);
+    }
+  }
+
+  function touch (i) {
+    if (!env.supportsTouch && !env.supportsIePointer) {
+      return;
+    }
+
+    const element = i.element;
+
+    function shouldPrevent(deltaX, deltaY) {
+      const scrollTop = Math.floor(element.scrollTop);
+      const scrollLeft = element.scrollLeft;
+      const magnitudeX = Math.abs(deltaX);
+      const magnitudeY = Math.abs(deltaY);
+
+      if (magnitudeY > magnitudeX) {
+        // user is perhaps trying to swipe up/down the page
+
+        if (
+          (deltaY < 0 && scrollTop === i.contentHeight - i.containerHeight) ||
+          (deltaY > 0 && scrollTop === 0)
+        ) {
+          // set prevent for mobile Chrome refresh
+          return window.scrollY === 0 && deltaY > 0 && env.isChrome;
+        }
+      } else if (magnitudeX > magnitudeY) {
+        // user is perhaps trying to swipe left/right across the page
+
+        if (
+          (deltaX < 0 && scrollLeft === i.contentWidth - i.containerWidth) ||
+          (deltaX > 0 && scrollLeft === 0)
+        ) {
+          return true;
+        }
+      }
+
+      return true;
+    }
+
+    function applyTouchMove(differenceX, differenceY) {
+      element.scrollTop -= differenceY;
+      element.scrollLeft -= differenceX;
+
+      updateGeometry(i);
+    }
+
+    let startOffset = {};
+    let startTime = 0;
+    let speed = {};
+    let easingLoop = null;
+
+    function getTouch(e) {
+      if (e.targetTouches) {
+        return e.targetTouches[0];
+      } else {
+        // Maybe IE pointer
+        return e;
+      }
+    }
+
+    function shouldHandle(e) {
+      if (e.pointerType && e.pointerType === 'pen' && e.buttons === 0) {
+        return false;
+      }
+      if (e.targetTouches && e.targetTouches.length === 1) {
+        return true;
+      }
+      if (
+        e.pointerType &&
+        e.pointerType !== 'mouse' &&
+        e.pointerType !== e.MSPOINTER_TYPE_MOUSE
+      ) {
+        return true;
+      }
+      return false;
+    }
+
+    function touchStart(e) {
+      if (element.classList.contains('ps-disabled')) {
+        return;
+      }
+      if (!shouldHandle(e)) {
+        return;
+      }
+
+      const touch = getTouch(e);
+
+      startOffset.pageX = touch.pageX;
+      startOffset.pageY = touch.pageY;
+
+      startTime = new Date().getTime();
+
+      if (easingLoop !== null) {
+        clearInterval(easingLoop);
+      }
+    }
+
+    function shouldBeConsumedByChild(target, deltaX, deltaY) {
+      if (!element.contains(target)) {
+        return false;
+      }
+
+      let cursor = target;
+
+      while (cursor && cursor !== element) {
+        if (cursor.classList.contains(cls.element.consuming)) {
+          return true;
+        }
+
+        const style = get(cursor);
+
+        // if deltaY && vertical scrollable
+        if (deltaY && style.overflowY.match(/(scroll|auto)/)) {
+          const maxScrollTop = cursor.scrollHeight - cursor.clientHeight;
+          if (maxScrollTop > 0) {
+            if (
+              (cursor.scrollTop > 0 && deltaY < 0) ||
+              (cursor.scrollTop < maxScrollTop && deltaY > 0)
+            ) {
+              return true;
+            }
+          }
+        }
+        // if deltaX && horizontal scrollable
+        if (deltaX && style.overflowX.match(/(scroll|auto)/)) {
+          const maxScrollLeft = cursor.scrollWidth - cursor.clientWidth;
+          if (maxScrollLeft > 0) {
+            if (
+              (cursor.scrollLeft > 0 && deltaX < 0) ||
+              (cursor.scrollLeft < maxScrollLeft && deltaX > 0)
+            ) {
+              return true;
+            }
+          }
+        }
+
+        cursor = cursor.parentNode;
+      }
+
+      return false;
+    }
+
+    function touchMove(e) {
+      if (shouldHandle(e)) {
+        const touch = getTouch(e);
+
+        const currentOffset = { pageX: touch.pageX, pageY: touch.pageY };
+
+        const differenceX = currentOffset.pageX - startOffset.pageX;
+        const differenceY = currentOffset.pageY - startOffset.pageY;
+
+        if (shouldBeConsumedByChild(e.target, differenceX, differenceY)) {
+          return;
+        }
+
+        applyTouchMove(differenceX, differenceY);
+        startOffset = currentOffset;
+
+        const currentTime = new Date().getTime();
+
+        const timeGap = currentTime - startTime;
+        if (timeGap > 0) {
+          speed.x = differenceX / timeGap;
+          speed.y = differenceY / timeGap;
+          startTime = currentTime;
+        }
+
+        if (shouldPrevent(differenceX, differenceY)) {
+          i.event.preventDefault(e, false);
+        }
+      }
+    }
+    function touchEnd() {
+      if (i.settings.swipeEasing) {
+        clearInterval(easingLoop);
+        easingLoop = setInterval(function () {
+          if (i.isInitialized) {
+            clearInterval(easingLoop);
+            return;
+          }
+
+          if (!speed.x && !speed.y) {
+            clearInterval(easingLoop);
+            return;
+          }
+
+          if (Math.abs(speed.x) < 0.01 && Math.abs(speed.y) < 0.01) {
+            clearInterval(easingLoop);
+            return;
+          }
+
+          if (!i.element) {
+            clearInterval(easingLoop);
+            return;
+          }
+
+          applyTouchMove(speed.x * 30, speed.y * 30);
+
+          speed.x *= 0.8;
+          speed.y *= 0.8;
+        }, 10);
+      }
+    }
+
+    if (env.supportsTouch) {
+      i.event.bind(element, 'touchstart', touchStart);
+      i.event.bind(element, 'touchmove', touchMove);
+      i.event.bind(element, 'touchend', touchEnd);
+    } else if (env.supportsIePointer) {
+      if (window.PointerEvent) {
+        i.event.bind(element, 'pointerdown', touchStart);
+        i.event.bind(element, 'pointermove', touchMove);
+        i.event.bind(element, 'pointerup', touchEnd);
+      } else if (window.MSPointerEvent) {
+        i.event.bind(element, 'MSPointerDown', touchStart);
+        i.event.bind(element, 'MSPointerMove', touchMove);
+        i.event.bind(element, 'MSPointerUp', touchEnd);
+      }
+    }
+  }
+
+  const defaultSettings = () => ({
+    handlers: ['click-rail', 'drag-thumb', 'keyboard', 'wheel', 'touch'],
+    maxScrollbarLength: null,
+    minScrollbarLength: null,
+    scrollingThreshold: 1000,
+    scrollXMarginOffset: 0,
+    scrollYMarginOffset: 0,
+    suppressScrollX: false,
+    suppressScrollY: false,
+    swipeEasing: true,
+    useBothWheelAxes: false,
+    wheelPropagation: true,
+    wheelSpeed: 1,
+  });
+
+  const handlers = {
+    'click-rail': clickRail,
+    'drag-thumb': dragThumb,
+    keyboard,
+    wheel,
+    touch,
+  };
+
+  class PerfectScrollbar {
+    constructor(element, userSettings = {}) {
+      if (typeof element === 'string') {
+        element = document.querySelector(element);
+      }
+
+      if (!element || !element.nodeName) {
+        throw new Error('no element is specified to initialize PerfectScrollbar');
+      }
+
+      this.element = element;
+
+      element.classList.add(cls.main);
+
+      this.settings = defaultSettings();
+      for (const key in userSettings) {
+        this.settings[key] = userSettings[key];
+      }
+
+      this.containerWidth = null;
+      this.containerHeight = null;
+      this.contentWidth = null;
+      this.contentHeight = null;
+
+      const focus = () => element.classList.add(cls.state.focus);
+      const blur = () => element.classList.remove(cls.state.focus);
+
+      this.isRtl = get(element).direction === 'rtl';
+      if (this.isRtl === true) {
+        element.classList.add(cls.rtl);
+      }
+      this.isNegativeScroll = (() => {
+        const originalScrollLeft = element.scrollLeft;
+        let result = null;
+        element.scrollLeft = -1;
+        result = element.scrollLeft < 0;
+        element.scrollLeft = originalScrollLeft;
+        return result;
+      })();
+      this.negativeScrollAdjustment = this.isNegativeScroll
+        ? element.scrollWidth - element.clientWidth
+        : 0;
+      this.event = new EventManager();
+      this.ownerDocument = element.ownerDocument || document;
+
+      this.scrollbarXRail = div(cls.element.rail('x'));
+      element.appendChild(this.scrollbarXRail);
+      this.scrollbarX = div(cls.element.thumb('x'));
+      this.scrollbarXRail.appendChild(this.scrollbarX);
+      this.scrollbarX.setAttribute('tabindex', 0);
+      this.event.bind(this.scrollbarX, 'focus', focus);
+      this.event.bind(this.scrollbarX, 'blur', blur);
+      this.scrollbarXActive = null;
+      this.scrollbarXWidth = null;
+      this.scrollbarXLeft = null;
+      const railXStyle = get(this.scrollbarXRail);
+      this.scrollbarXBottom = parseInt(railXStyle.bottom, 10);
+      if (isNaN(this.scrollbarXBottom)) {
+        this.isScrollbarXUsingBottom = false;
+        this.scrollbarXTop = toInt(railXStyle.top);
+      } else {
+        this.isScrollbarXUsingBottom = true;
+      }
+      this.railBorderXWidth =
+        toInt(railXStyle.borderLeftWidth) + toInt(railXStyle.borderRightWidth);
+      // Set rail to display:block to calculate margins
+      set(this.scrollbarXRail, { display: 'block' });
+      this.railXMarginWidth =
+        toInt(railXStyle.marginLeft) + toInt(railXStyle.marginRight);
+      set(this.scrollbarXRail, { display: '' });
+      this.railXWidth = null;
+      this.railXRatio = null;
+
+      this.scrollbarYRail = div(cls.element.rail('y'));
+      element.appendChild(this.scrollbarYRail);
+      this.scrollbarY = div(cls.element.thumb('y'));
+      this.scrollbarYRail.appendChild(this.scrollbarY);
+      this.scrollbarY.setAttribute('tabindex', 0);
+      this.event.bind(this.scrollbarY, 'focus', focus);
+      this.event.bind(this.scrollbarY, 'blur', blur);
+      this.scrollbarYActive = null;
+      this.scrollbarYHeight = null;
+      this.scrollbarYTop = null;
+      const railYStyle = get(this.scrollbarYRail);
+      this.scrollbarYRight = parseInt(railYStyle.right, 10);
+      if (isNaN(this.scrollbarYRight)) {
+        this.isScrollbarYUsingRight = false;
+        this.scrollbarYLeft = toInt(railYStyle.left);
+      } else {
+        this.isScrollbarYUsingRight = true;
+      }
+      this.scrollbarYOuterWidth = this.isRtl ? outerWidth(this.scrollbarY) : null;
+      this.railBorderYWidth =
+        toInt(railYStyle.borderTopWidth) + toInt(railYStyle.borderBottomWidth);
+      set(this.scrollbarYRail, { display: 'block' });
+      this.railYMarginHeight =
+        toInt(railYStyle.marginTop) + toInt(railYStyle.marginBottom);
+      set(this.scrollbarYRail, { display: '' });
+      this.railYHeight = null;
+      this.railYRatio = null;
+
+      this.reach = {
+        x:
+          element.scrollLeft <= 0
+            ? 'start'
+            : element.scrollLeft >= this.contentWidth - this.containerWidth
+              ? 'end'
+              : null,
+        y:
+          element.scrollTop <= 0
+            ? 'start'
+            : element.scrollTop >= this.contentHeight - this.containerHeight
+              ? 'end'
+              : null,
+      };
+
+      this.isAlive = true;
+
+      this.settings.handlers.forEach((handlerName) =>
+        handlers[handlerName](this)
+      );
+
+      this.lastScrollTop = Math.floor(element.scrollTop); // for onScroll only
+      this.lastScrollLeft = element.scrollLeft; // for onScroll only
+      this.event.bind(this.element, 'scroll', (e) => this.onScroll(e));
+      updateGeometry(this);
+    }
+
+    update() {
+      if (!this.isAlive) {
+        return;
+      }
+
+      // Recalcuate negative scrollLeft adjustment
+      this.negativeScrollAdjustment = this.isNegativeScroll
+        ? this.element.scrollWidth - this.element.clientWidth
+        : 0;
+
+      // Recalculate rail margins
+      set(this.scrollbarXRail, { display: 'block' });
+      set(this.scrollbarYRail, { display: 'block' });
+      this.railXMarginWidth =
+        toInt(get(this.scrollbarXRail).marginLeft) +
+        toInt(get(this.scrollbarXRail).marginRight);
+      this.railYMarginHeight =
+        toInt(get(this.scrollbarYRail).marginTop) +
+        toInt(get(this.scrollbarYRail).marginBottom);
+
+      // Hide scrollbars not to affect scrollWidth and scrollHeight
+      set(this.scrollbarXRail, { display: 'none' });
+      set(this.scrollbarYRail, { display: 'none' });
+
+      updateGeometry(this);
+
+      processScrollDiff(this, 'top', 0, false, true);
+      processScrollDiff(this, 'left', 0, false, true);
+
+      set(this.scrollbarXRail, { display: '' });
+      set(this.scrollbarYRail, { display: '' });
+    }
+
+    onScroll(e) {
+      if (!this.isAlive || this.element.classList.contains('ps-disabled')) {
+        return;
+      }
+
+      updateGeometry(this);
+      processScrollDiff(this, 'top', this.element.scrollTop - this.lastScrollTop);
+      processScrollDiff(
+        this,
+        'left',
+        this.element.scrollLeft - this.lastScrollLeft
+      );
+
+      this.lastScrollTop = Math.floor(this.element.scrollTop);
+      this.lastScrollLeft = this.element.scrollLeft;
+    }
+
+    destroy() {
+      if (!this.isAlive) {
+        return;
+      }
+
+      this.event.unbindAll();
+      remove(this.scrollbarX);
+      remove(this.scrollbarY);
+      remove(this.scrollbarXRail);
+      remove(this.scrollbarYRail);
+      this.removePsClasses();
+
+      // unset elements
+      this.element = null;
+      this.scrollbarX = null;
+      this.scrollbarY = null;
+      this.scrollbarXRail = null;
+      this.scrollbarYRail = null;
+
+      this.isAlive = false;
+    }
+
+    removePsClasses() {
+      this.element.className = this.element.className
+        .split(' ')
+        .filter((name) => !name.match(/^ps([-_].+|)$/))
+        .join(' ');
+    }
+  }
+
+  return PerfectScrollbar;
+
+}));
+
+/**
+ * The language selection dialog code
+ */
+var langDialog = {
+
+    $dialog: null,
+    $overlay: null,
+
+    /**
+     * Initialises and shows the dialog
+     */
+    show: function() {
+
+        // Cache some selectors for performance
+        let langDialogSelector = '.languages-dialog';
+        if (is_mobile) {
+            langDialogSelector = '.languages-dialog-mobile';
+        }
+
+        langDialog.$dialog = $(`.mega-dialog${langDialogSelector}`);
+        langDialog.$overlay = $('.fm-dialog-overlay');
+
+        var $tierOneLanguages = langDialog.$dialog.find('.tier-one-languages');
+        var $tierTwoLanguages = langDialog.$dialog.find('.tier-two-languages');
+
+        // Main tier 1 languages that we support (based on usage analysis)
+        var tierOneLangCodes = [
+            'es', 'en', 'br', 'ct', 'fr', 'de', 'ru', 'it', 'ar',
+            'nl', 'cn', 'jp', 'kr', 'ro', 'id', 'th', 'vi', 'pl'
+        ];
+
+        // Remove all the tier 1 languages and we have only the tier 2 languages remaining
+        var allLangCodes = Object.keys(languages);
+        var tierTwoLangCodes = allLangCodes.filter(function(langCode) {
+            return (tierOneLangCodes.indexOf(langCode) < 0);
+        });
+
+        // Generate the HTML for tier one and tier two languages (second param set to true shows beta icon)
+        var tierOneHtml = langDialog.renderLanguages(tierOneLangCodes, false);
+
+        // Display the HTML
+        $tierOneLanguages.safeHTML(tierOneHtml);
+
+        if (tierTwoLangCodes.length) {
+
+            var tierTwoHtml = langDialog.renderLanguages(tierTwoLangCodes, true);
+            $tierTwoLanguages.safeHTML(tierTwoHtml);
+        }
+        else {
+            $('.show-more-languages', langDialog.$dialog).addClass('hidden');
+        }
+
+        // Cache some selectors for performance
+        var $languageLinks = langDialog.$dialog.find('.nlanguage-lnk');
+        var $showMoreLanguages = langDialog.$dialog.find('.show-more-languages');
+        var $arrowIcon = $showMoreLanguages.find('.round-arrow');
+        var $showHideText = $showMoreLanguages.find('.show-more-text');
+
+        // When the user clicks on 'Show more languages', show the Tier 2 languages
+        $showMoreLanguages.rebind('click', function() {
+
+            // If the extra languages section is already open
+            if ($arrowIcon.hasClass('opened')) {
+
+                // Extra languages hidden
+                $arrowIcon.removeClass('opened');
+                $showHideText.safeHTML(l[7657]);        // Show more languages
+                $tierTwoLanguages.hide();
+                langDialog.centerDialog();
+            }
+            else {
+                // Extra languages visible
+                $arrowIcon.addClass('opened');
+                $showHideText.safeHTML(l[7658]);        // Hide languages
+                $tierTwoLanguages.show();
+                langDialog.centerDialog();
+            }
+        });
+
+        // Show tier two languages if a language is already selected from that list
+        if (tierTwoLangCodes.indexOf(lang) > -1) {
+            $arrowIcon.addClass('opened');
+            $showHideText.safeHTML(l[7658]);        // Hide languages
+            $tierTwoLanguages.show();
+            langDialog.centerDialog();
+        }
+
+        // Show the dialog
+        langDialog.$dialog.removeClass('hidden');
+        langDialog.$overlay.removeClass('hidden');
+        $('body').addClass('overlayed');
+        $.dialog = 'languages';
+
+        // Initialise the close button
+        langDialog.$dialog.find('button.js-close').rebind('click', function() {
+            langDialog.hide();
+        });
+
+        // Initialise the save button
+        langDialog.initSaveButton();
+
+        // Show different style when language is selected
+        $languageLinks.rebind('click', function() {
+
+            $languageLinks.removeClass('selected');
+            $(this).addClass('selected');
+
+            return false;
+        });
+    },
+
+    /**
+     * Re-center the dialog vertically because the height can change when showing/hiding the extra languages
+     */
+    centerDialog: function() {
+
+        var currentHeight = langDialog.$dialog.outerHeight();
+        var newTopMargin = (currentHeight / 2) * -1;
+
+        langDialog.$dialog.css('margin-top', newTopMargin);
+    },
+
+    /**
+     * Hides the language dialog
+     * @returns {false}
+     */
+    hide: function() {
+
+        langDialog.$dialog.addClass('hidden');
+        langDialog.$overlay.addClass('hidden');
+        $('body').removeClass('overlayed');
+        $.dialog = false;
+
+        return false;
+    },
+
+    /**
+     * Create the language HTML from a list of language codes
+     * @param {Array} langCodes Array of language codes e.g. ['en', 'es', ...]
+     * @param {Boolean} tierTwo If this is a tier two / beta language
+     * @returns {String} Returns the HTML to be rendered
+     */
+    renderLanguages: function(langCodes, tierTwo) {
+
+        let langDialogSelector = '.languages-dialog';
+        if (is_mobile) {
+            langDialogSelector = '.languages-dialog-mobile';
+        }
+
+        var $template = $(`${langDialogSelector} .language-template`).clone();
+        var html = '';
+
+        // Remove template class
+        $template.removeClass('language-template');
+
+        // Sort languages by ISO 639-1 two letter language code (which is reasonably ordered anyway)
+        langCodes.sort(function(codeA, codeB) {
+            return codeA.localeCompare(codeB);
+        });
+
+        // Make single array with code, native lang name, and english lang name
+        for (var i = 0, length = langCodes.length; i < length; i++) {
+
+            var langCode = langCodes[i];                 // Two letter language code e.g. de
+            var langItem = Object(languages[langCode]);  // map to languages object
+            var nativeName = langItem[2];                // Deutsch
+            var englishName = langItem[1];               // German
+
+            if (!nativeName) {
+                console.warn('Language %s not found...', langCode);
+                continue;
+            }
+
+            // Clone the template
+            var $langHtml = $template.clone();
+
+            // Update the template details
+            $langHtml.attr('data-lang-code', langCode);
+            $langHtml.find('.native-language-name').text(nativeName);
+            $langHtml.attr('title', englishName);
+
+            // If they have already chosen a language show it as selected
+            if (langCode === lang) {
+                $langHtml.addClass('selected');
+            }
+
+            // If the beta language, show the beta icon
+            if (tierTwo) {
+                $langHtml.find('.beta').removeClass('hidden');
+            }
+
+            // Build up the HTML to be rendered
+            html += $langHtml.prop('outerHTML');
+        }
+
+        return html;
+    },
+
+    /**
+     * Initialise the Save button to set the language and reload the page
+     */
+    initSaveButton: function() {
+
+        // Initialise the save button
+        langDialog.$dialog.find('.fm-languages-save').rebind('click', function() {
+
+            langDialog.hide();
+
+            // Get the selected code
+            var selectedLangCode = langDialog.$dialog.find('.nlanguage-lnk.selected').attr('data-lang-code');
+
+            // If not the currently selected language, change to the selected language
+            if (selectedLangCode !== lang) {
+                M.uiSaveLang(selectedLangCode)
+                    .then(() => location.reload())
+                    .catch(dump);
+            }
+        });
+    }
+};
+
+lazy(mega, 'commercials', () => {
+
+    'use strict';
+
+    // Initialise objects and sets
+    const linkedSlots = {
+        'mwebcdb': ['mwebcdb', 'mwebtcdb'],
+        'mwebtcdb': ['mwebtcdb', 'mwebcdb'],
+        'mwebfilinkb': ['mwebfilinkb', 'mwebtfilinkb'],
+        'mwebtfilinkb': ['mwebtfilinkb', 'mwebfilinkb'],
+        'mwebfolinkb': ['mwebfolinkb', 'mwebtfolinkb'],
+        'mwebtfolinkb': ['mwebtfolinkb', 'mwebfolinkb'],
+        'webfilinkb': ['webfilinkb', 'webfilinkbs'],
+        'webfilinkbs': ['webfilinkbs', 'webfilinkb'],
+    };      // List of all slots that should be treated as the same slot together when closing a comm as a new user
+    const pageWidthInfo = {
+        wideOrNarrow: undefined,
+        showSlot: undefined,
+    };      // Contains information for setting the height of the bottom bar in mobile pages
+    const slotWrappers = {};        // Stores all opened slotWrappers
+    const newUserClosedSlots = new Set();       // Comms that have been closed by a new user to not redisplay
+    const loading = new Set();      // Store all currently loading comms to ensure same one not simultaneously reloaded
+
+    // Cache generally used JQuery elements
+    let $startholder;       // Cache the startholder
+    let $fileManagerBlock;      // Stores the file manager block
+    let $mobileFooter;      // Cache the footer for non-cloud drive mobile pages
+    let $slotParent;        // Parent of the currently active coms. Updated on page load
+    let $closeButton;       // Close button to clone for comm creation
+    let $videoTheatreModeWrapper;       // Wrapper for the video theatre mode
+    let $theatreMode;       // Video section to adjust the class of if user is in video theatre mode
+
+    // Initialise variables that store information about the current comms state
+    let activeSlots = [];       // List of all currently active commercial (comm) ids
+    let commSlots = [];     // List of all new slots to update comms with
+    let currentPage;     // Stores the users' current page in an easily accessible way.
+    let closeMobileCloudDriveSlots = false;     // Have mobile cloud drive ad slots been permanantly closed?
+    let closeMobileFolderlinkSlots = false;     // Have mobile folder link ad slots been permanantly closed?
+    let closeFileLinkSlots = false;
+    let initialised = false;        // Have adHandlers been initialized
+    let isMobileCloudDrive;     // True if current page is mobile home, and selected tab is cloud drive
+    let resizeHandlerActive;        // Are there any current resize handlers active for comms
+    let commsReturned = true;      // Store if any comms have been returned from api
+
+    // Initialise variables to check for specific states
+    let $fmholder;      // Cache the fmholder to check if it has the class for copying or moving files
+    let copyOrMove;     // Is a file being copied or moved in the mobile cloud drive?
+    let $megaOverlay;       // Cache the mega overlay to check if it is overriding ad displays
+    let overlayActive;      // Is there currently an overlay blocking ads from showing?
+    let $mediaViewer;       // Cache the media viewer
+    let imageOpen;      // Store if an image is open, meaning that ads should not be displayed
+    let $filePreview;       // Store the file preview to check if it has the class for copying or moving files
+    let filePreviewOpen;        // Is there currently a file preview being displayed?
+    let commsCovered;       // Store if any commercials are covered by something that they shouldn't be displayed behind
+    let cspInitialised = false;        // Have csp been initialised?
+    let adCookies = 0;
+    let publicUser;
+
+
+    // Check if the slotWrapper is cached, if not then retrieve and cache it, and return the commWrapper
+    const getCommWrapper = (commID) => {
+
+        if (!slotWrappers[commID] || !slotWrappers[commID][0]){
+            slotWrappers[commID] = $(`#commercial-wrapper-${commID}`, $slotParent);
+        }
+        return slotWrappers[commID];
+    };
+
+    // Update general cached elements
+    const updateCachedElements = () => {
+        const fileManagerName = is_mobile
+            ? '.file-manager-block'
+            : '.main-blur-block > .pm-main';
+
+        $fmholder = $fmholder || $(`body .fmholder`);
+
+        $fileManagerBlock = $(`> ${fileManagerName}`, $fmholder);
+        $startholder = $startholder || $(`body #mainlayout #startholder`);
+        $megaOverlay = $megaOverlay || $(`body > .overlay-wrap`).not('.modal-dialog');
+        $mediaViewer = $mediaViewer || $('.media-viewer-container ', $fileManagerBlock);
+        $filePreview = $filePreview || $('.overlay-wrap', $fileManagerBlock);
+    };
+
+    // Set the fileManagerBlock to be user, and return the wrapper of the comms on the page
+    const getslotParent = (newPage) => {
+
+        if ((!$fileManagerBlock || !$fileManagerBlock[0]) || (newPage !== currentPage)) {
+            updateCachedElements();
+        }
+
+        switch (newPage) {
+
+            // Mobile folder link bottom bar is not located in the file manager block
+            case 'mobileFolderlink':
+                return $('body #fmholder > .mega-comms.mega-bottom-bar');
+            case 'mobileClouddrive':
+                return $('> .commercial-footer-cd', $fileManagerBlock);
+            case 'mobileFilelink':
+                return $('.media-viewer footer .viewer-bars > .mega-comms.mega-bottom-bar', $fileManagerBlock);
+            case 'folderLink':
+                return $('> .fm-right-files-block', $fileManagerBlock);
+            case 'home':
+            case 'clouddrive':
+                return $('.fm-left-panel', $fileManagerBlock);
+            default:
+                return undefined;
+        }
+    };
+
+    // Get the slots and page name
+    const getCurrentSlotsAndPage = (getMobile) => {
+
+        let newSlots = [];
+        let newPage = '';
+
+        if (is_mobile && getMobile) {
+            if (pfid) {
+                newSlots = [['mwebfolinkb'], ['mwebtfolinkb']];
+                newPage = 'mobileFolderlink';
+            }
+            else if (M.currentdirid) {
+                // if (M.currentrootid === M.RootID) {
+                //    newSlots = [['mwebcdb'], ['mwebtcdb']];
+                //    newPage = 'mobileClouddrive';
+                // }
+                // else {
+                newSlots = [];
+                // newPage = 'mobileClouddrive';
+                newPage = '';
+                // }
+            }
+            else {
+                newSlots = [['mwebfilinkb'], ['mwebtfilinkb']];
+                newPage = 'mobileFilelink';
+            }
+        }
+        else if (is_mobile) {
+            newSlots = [];
+        }
+        else if (folderlink) {
+            newSlots = ['weblinkb'];
+            newPage = 'folderLink';
+        }
+        else if (page === 'download') {
+            newSlots = [['webfilinkbs'], ['webfilinkb']];
+            newPage = 'filelink';
+        }
+        else if (M.currentdirid === 'dashboard'){
+            // newSlots = ['webdashsl'];
+            newPage = 'home';
+        }
+        else if (M.currentdirid === 'cloud-drive') {
+            // newSlots = ['webcdsl'];
+            newPage = 'clouddrive';
+        }
+
+        if (newSlots.length === 2) {
+            newSlots = pageWidthInfo.wideOrNarrow === 'narrow'
+                ? newSlots[0]
+                : newSlots[1];
+        }
+
+        return [newSlots, newPage];
+    };
+
+    // Hide given comms, otherwise hide all active comms
+    // Empties the slot instead of hiding it to give more accurate data from megaad about loaded comms
+    const hideComms = (commSlots, hideWrapper) => {
+
+        if (window.googletag) {
+            googletag.destroySlots();
+        }
+
+        commSlots = commSlots && commSlots.length
+            ? commSlots
+            : activeSlots;
+
+        for (let i = 0; i < commSlots.length; i++) {
+            if (!activeSlots.includes(commSlots[i]) && !hideWrapper) {
+                continue;
+            }
+            const commID = commSlots[i];
+            const $slotWrapper = getCommWrapper(commID);
+
+            if ($slotWrapper.length) {
+                if (hideWrapper) {
+                    $slotWrapper.addClass('hidden');
+                    const index = activeSlots.indexOf(commID);
+                    if (index > -1) {
+                        activeSlots.splice(activeSlots.indexOf(commID), 1);
+                    }
+                }
+
+                $slotWrapper.empty();
+            }
+
+            // Unblocks future loading additions if the page size is changed between mobile/tablet
+            // It is safe to assume that if a slot should be hidden, its linked comms should also be
+            if (linkedSlots[commID]) {
+                for (let j = 0; j < linkedSlots[commID].length; j++) {
+                    loading.delete(linkedSlots[commID][j]);
+                }
+            }
+            else {
+                loading.delete(commID);
+            }
+        }
+
+        // Resize the window to make sure any empty space is filled, and scrollbars are correct height
+        if (hideWrapper && u_attr && u_attr.na && !is_mobile) {
+            $(window).resize();
+        }
+    };
+
+    // Sets the currently active page, slotParent, and updates the comms to show
+    const updateCurrentPage = (getMobile, blockReset) => {
+
+        commSlots = [];
+
+        const [newSlots, newPage] = getCurrentSlotsAndPage(getMobile);
+
+        const isNewPage = currentPage !== newPage;
+
+        if (u_attr && u_attr.na) {
+            for (let i = 0; i < newSlots.length; i++) {
+                if (!newUserClosedSlots.has(newSlots[i])) {
+                    commSlots.push(newSlots[i]);
+                }
+            }
+        }
+        else {
+            commSlots = newSlots;
+        }
+
+        if ((!$slotParent || !$slotParent[0]) || isNewPage) {
+            if (currentPage === 'folderLink') {
+                hideComms(undefined, true);
+            }
+            $slotParent = getslotParent(newPage);
+            currentPage = newPage;
+            if (isNewPage && !blockReset) {
+                // eslint-disable-next-line no-use-before-define
+                init(true);
+
+                // Return true if the page is being re initialized, so that current updates can be blocked
+                return true;
+            }
+        }
+    };
+
+    // Unhide given comms if they are in active comms
+    const unhideComms = (commSlots) => {
+
+        let resize = false;
+
+        for (let i = 0; i < commSlots.length; i++) {
+            if (activeSlots.includes(commSlots[i])) {
+
+                const $slotWrapper = getCommWrapper(commSlots[i]);
+                if ($slotWrapper.length) {
+                    resize = $slotWrapper.hasClass('hidden');
+                    $('iframe', $slotWrapper).removeClass('hidden');
+                    $slotWrapper.removeClass('hidden');
+                    $('.commercial-close-button', $slotWrapper).removeClass('hidden');
+                }
+            }
+        }
+        if (currentPage === 'mobileFilelink' && resize) {
+            $(window).resize();
+        }
+    };
+
+    // Add and remove classes to make the bottom bar and footer in mobile the correct heights
+    // and correct display (flex/none)
+    const updateBottomBar = (noComms) => {
+
+        // Handle no commercials being returned by api (remove all stylings for comms)
+        commsReturned = noComms === undefined
+            ? commsReturned
+            : !noComms;
+
+        if (!commsReturned) {
+            $fileManagerBlock.removeClass('cd-commercials fol-commercials');
+            if (currentPage === 'mobileCloudDrive') {
+                $mobileFooter.removeClass('commercials');
+            }
+            return;
+        }
+
+        if (currentPage === 'mobileClouddrive' && M.currentrootid === M.RootID) {
+
+            $mobileFooter = $mobileFooter && $mobileFooter.length
+                ? $mobileFooter
+                : $('.mega-footer', $fileManagerBlock);
+
+            if (closeMobileCloudDriveSlots || filePreviewOpen) {
+                $fileManagerBlock.removeClass('cd-commercials');
+                $mobileFooter.removeClass('commercials');
+            }
+            else {
+                $fileManagerBlock.addClass('cd-commercials');
+                $mobileFooter.addClass('commercials');
+            }
+        }
+        else {
+            $fileManagerBlock.removeClass('cd-commercials');
+        }
+
+        if (currentPage === 'mobileFolderlink') {
+            if (closeMobileFolderlinkSlots || filePreviewOpen) {
+                $fileManagerBlock.removeClass('fol-commercials');
+            }
+            else {
+                $fileManagerBlock.addClass('fol-commercials');
+            }
+        }
+        else {
+            $fileManagerBlock.removeClass('fol-commercials');
+        }
+    };
+
+    // Set the information for showing commercials in the bottom bar, as well as the current state, tablet or mobile
+    const setMobileBottomBar = (width) => {
+
+        if (!width
+            || (closeMobileCloudDriveSlots && currentPage === 'mobileClouddrive')
+            || (closeMobileFolderlinkSlots && currentPage === 'mobileFolderlink')) {
+            return;
+        }
+
+        if (width === 'reset'){
+            pageWidthInfo.showSlot = false;
+            if (currentPage === 'mobileClouddrive') {
+                closeMobileCloudDriveSlots = true;
+            }
+            else if (currentPage === 'mobileFolderlink') {
+                closeMobileFolderlinkSlots = true;
+            }
+        }
+        else {
+            pageWidthInfo.wideOrNarrow = width < 770 ? 'narrow' : 'wide';
+            if ((window.outerHeight >= 600) && (width >= 360)) {
+                pageWidthInfo.showSlot = true;
+            }
+            else {
+                pageWidthInfo.showSlot = false;
+                hideComms(undefined, true);
+            }
+        }
+
+        updateBottomBar();
+
+    };
+
+    // Check if the resize handler should be active, set it if so, remove it if not
+    const updateResizeHandlers = () => {
+        if (activeSlots.length < 1 || currentPage === '') {
+            if (is_mobile) {
+                $(window).off('resize.mega-comms-mobile');
+            }
+            else {
+                $(window).off('resize.mega-comms-desktop');
+            }
+            resizeHandlerActive = false;
+        }
+        else if (!resizeHandlerActive) {
+            if (is_mobile) {
+                // eslint-disable-next-line no-use-before-define
+                initMobileResizeHandler();
+            }
+            else {
+                // eslint-disable-next-line no-use-before-define
+                initDesktopResizeHandler();
+            }
+        }
+    };
+
+    // Set if the user should have space for ads under the video theatre mode
+    const setVideoTheatreMode = (add, $wrapper) => {
+
+        $videoTheatreModeWrapper = $videoTheatreModeWrapper || $wrapper;
+        $theatreMode = $theatreMode || $('.download.main-pad .download.transfer-wrapper', $videoTheatreModeWrapper);
+        if (/* !mega.flags.ab_ads ||*/ !$videoTheatreModeWrapper || currentPage !== 'filelink') {
+            return;
+        }
+
+        if (activeSlots.length === 0 && !closeFileLinkSlots && add) {
+            // eslint-disable-next-line no-use-before-define
+            getComms();
+        }
+
+        if (add && !closeFileLinkSlots) {
+            $theatreMode.addClass('fil-commercials');
+        }
+        else if (closeFileLinkSlots || activeSlots.length === 0) {
+            $theatreMode.removeClass('fil-commercials');
+        }
+    };
+
+    // This should only be called after an await csp.init() call
+    const updateCommCookies = () => {
+        /*
+        if (csp.has('ad') === adCookies || publicUser === undefined) {
+            return;
+        }
+        adCookies = !!csp.has('ad');
+        */
+
+
+
+        adCookies = true;
+        if (window.googletag) {
+            googletag.pubads().setPrivacySettings({nonPersonalizedAds: adCookies});
+        }
+        else {
+            for (let i = 0; i < activeSlots.length; i++) {
+                const $slotWrapper = getCommWrapper(activeSlots[i]);
+                const iframe = $('> iframe', $slotWrapper)[0];
+                // If there is no iframe found we cannot edit the cookies, so remove the iframe to be safe
+                if (!iframe) {
+                    hideComms([activeSlots[i]], true);
+                }
+                else if (adCookies && !iframe.src.includes('&ac=1')) {
+                    iframe.src += '&ac=1';
+                }
+                else if (!adCookies){
+                    iframe.src = iframe.src.replace('&ac=1', '');
+                }
+            }
+        }
+    };
+
+    const handleCookies = async() => {
+        // If essential cookies are not set, csp is not initialized
+        if (mega.flags.ab_adse && 'csp' in window) {
+            if (d) {
+                console.info('begin await ad init cookies');
+            }
+            await csp.init();
+            cspInitialised = true;
+            updateCommCookies();
+            if (d) {
+                console.info('finish await ad init cookies');
+            }
+        }
+
+        return false;
+    };
+
+    // Create a given commercial from information returned by api
+    const createComm = async(comm) => {
+
+        let commID = comm.id.toLowerCase();
+
+        const slotWrapper = getCommWrapper(commID)[0];
+
+        if (slotWrapper) {
+            const newIframe = document.createElement('iframe');
+
+            handleCookies();
+
+            if (document.body.classList.contains('theme-dark')) {
+                comm.src += '&dm=1';
+            }
+
+            if (cspInitialised && csp.has('ad')) {
+                comm.src += '&ac=1';
+            }
+
+            newIframe.sandbox = 'allow-scripts allow-same-origin allow-popups';
+            newIframe.id = commID;
+            newIframe.src = comm.src;
+            newIframe.width = comm.w;
+            newIframe.height = comm.h;
+            newIframe.classList.add('hidden');
+            newIframe.onload = () => {
+                if (typeof commID === 'string' && activeSlots.includes(commID.toLowerCase()) && !commsCovered) {
+                    unhideComms([commID]);
+                }
+                else {
+                    $(slotWrapper).empty();
+                }
+                if (linkedSlots[commID]) {
+                    for (let i = 0; i < linkedSlots[commID].length; i++) {
+                        loading.delete(linkedSlots[commID][i]);
+                    }
+                }
+                else {
+                    loading.delete(commID);
+                }
+            };
+
+            $closeButton = $closeButton && $closeButton[0].length
+                ? $closeButton
+                : currentPage === 'filelink'
+                    ? $('.bottom-page .download-content #commercial-close-button', $startholder)
+                    : $('#commercial-close-button', $fileManagerBlock);
+
+            const $closeClone = $closeButton.clone().addClass('hidden');
+
+            $closeClone.rebind('click', () => {
+                commID = linkedSlots[commID] || [commID];
+
+                // Permanantly hide all linked comms if user is new
+                const canCloseComms = u_attr && u_attr.na;
+                hideComms(commID, canCloseComms);
+                if (canCloseComms) {
+                    for (let i = 0; i < commID.length; i++) {
+                        newUserClosedSlots.add(commID[i]);
+                    }
+                    if (currentPage === 'mobileClouddrive' || currentPage === 'mobileFolderlink') {
+                        setMobileBottomBar('reset');
+                    }
+                    else if (currentPage === 'filelink') {
+                        closeFileLinkSlots = true;
+                        setVideoTheatreMode(false);
+                    }
+                    updateResizeHandlers();
+                }
+                else {
+                    // eslint-disable-next-line no-use-before-define
+                    getComms(true, true);
+                }
+            });
+            $closeClone.removeAttr('id');
+            slotWrapper.replaceChildren(newIframe, $closeClone[0]);
+            loading.add(commID);
+        }
+        else {
+            if (d) {
+                console.error('No slot wrapper found for', commID);
+            }
+            loading.delete(commID);
+        }
+    };
+
+    const createGoogleComm = (comm) => {
+
+        const commID = comm.id.toLowerCase();
+        const slotWrapper = getCommWrapper(commID)[0];
+
+        if (slotWrapper) {
+
+            window.googletag = window.googletag || {cmd: []};
+            googletag.cmd.push(() => {
+
+                googletag.pubads().setForceSafeFrame(true);
+
+                if (typeof commID === 'string' && activeSlots.includes(commID.toLowerCase()) && !commsCovered) {
+                    unhideComms([commID]);
+                }
+                else {
+                    $(slotWrapper).empty();
+                }
+
+                googletag.defineSlot(
+                    `/22060108601/${commID.toUpperCase()}`,
+                    [comm.w, comm.h], slotWrapper.id).addService(googletag.pubads()
+                );
+                // If this is live or smoketest set page_url.
+                if (location.host === 'smoketest.mega.nz') {
+                    googletag.pubads().set('page_url', `https://smoketest.mega.nz/`);
+                }
+                else if (location.host === 'mega.nz') {
+                    googletag.pubads().set('page_url', `https://mega.nz/`);
+                }
+                handleCookies();
+                googletag.enableServices();
+                googletag.display(slotWrapper.id);
+
+                if (linkedSlots[commID]) {
+                    for (let i = 0; i < linkedSlots[commID].length; i++) {
+                        loading.delete(linkedSlots[commID][i]);
+                    }
+                }
+                else {
+                    loading.delete(commID);
+                }
+            });
+        }
+        else {
+            if (d) {
+                console.error('No slot wrapper found for', commID);
+            }
+            loading.delete(commID);
+        }
+    };
+
+    const handleCommType = tryCatch((res) => {
+        /*
+        if (publicUser) {
+            window.onerror = dump;
+
+            if (window.googletag) {
+                for (let i = 0; i < res.length; i++) {
+                    createGoogleComm(res[i]);
+                }
+            }
+            else if (!window.buildOlderThan10Days) {
+
+                const gpt = mCreateElement(
+                    'script',
+                    {type: 'application/javascript', src: 'https://securepubads.g.doubleclick.net/tag/js/gpt.js'},
+                    'head'
+                );
+                gpt.onload = () => {
+                    if (d) {
+                        console.info('gpt.js loaded');
+                    }
+                    // loop activeSlots and create googletag ad slots
+                    for (let i = 0; i < res.length; i++) {
+                        createGoogleComm(res[i]);
+                    }
+                };
+                gpt.onerror = (error) => {
+                    console.error('Failed to load gpt.js:', error);
+                };
+            }
+        }
+        else {
+        */
+        for (let i = 0; i < res.length; i++) {
+            if (!newUserClosedSlots.has(res[i].id.toLowerCase())) {
+                createComm(res[i]);
+            }
+        }
+        // }
+    });
+
+    // Update current page, and get the comms that should be loaded
+    const getComms = (getMobile, force) => {
+
+        // publicUser = mShowAds && !u_attr && !u_handle && mega.flags.ab_adse && isPublicLink();
+        // publicUser = mShowAds && !u_attr && !u_handle && isPublicLink();
+
+        const publicL = isPublicLink();
+        if (u_attr && u_attr.p || !publicL || String(publicL.link || publicL).startsWith('collection/')) {
+            hideComms(undefined, true);
+            return;
+        }
+
+        const stopUpdate = updateCurrentPage(getMobile);
+
+        if (/* !mega.flags.ab_ads            || */
+            ((is_mobile || currentPage === 'filelink') && !pageWidthInfo.showSlot)
+            || stopUpdate) {
+            return;
+        }
+
+        // The is largely to ensure that the tabs in desktop fm don't refresh ads
+        if ((activeSlots.toString() === commSlots.toString())
+            && !force) {
+            return;
+        }
+
+        hideComms((Array.from(activeSlots)).filter(x => !commSlots.includes(x)), currentPage === 'home'
+            || currentPage === 'mobileCloudcloudrive');
+
+        activeSlots = commSlots;
+
+        if ((currentPage === 'mobileClouddrive' && (M.currentrootid !== M.RootID))
+            || (commSlots.length === 0)
+            || commsCovered) {
+            hideComms([], true);
+            activeSlots = [];
+            updateResizeHandlers();
+            return;
+        }
+
+        updateResizeHandlers();
+
+        const req = {
+            a: 'adf',
+            ad: localStorage.commFlag | 0,
+            au: commSlots.filter(slot => (!newUserClosedSlots.has(slot) && !loading.has(slot))).map(slot => {
+                loading.add(slot);
+                return slot.toUpperCase();
+            }),
+        };
+
+        if (req.au.length < 1) {
+            return;
+        }
+
+        if (pfid) {
+            req.ph = pfid;
+        }
+
+        api.req(req).then((res) => {
+            res = res.result;
+            if (res[0] !== ENOENT) {
+                handleCommType(res);
+            }
+        }).catch((ex) => {
+
+            // Remove all active comms and comm styles
+            hideComms(activeSlots, true);
+            updateBottomBar(true);
+            setVideoTheatreMode(false);
+            for (let i = 0; i < req.au.length; i++) {
+                loading.delete(req.au[i]);
+            }
+
+            // There are no ads for the user to render
+            if (ex === ENOENT) {
+                if (d) {
+                    console.info('No ads returned from api for:', req);
+                }
+            }
+            else if (d) {
+                console.error('Commercials API call returned an error: ' + ex);
+            }
+        });
+    };
+
+
+    // If comms are enabled, create a new wrapper for the bottom bar,
+    // and return the new bottom bar node location.
+    const addCommsToBottomBar = (bottomBar, isFolderLink) => {
+
+        if (/* !mega.flags.ab_ads ||*/ (currentPage === 'mobileFolderlink' && !isFolderLink)){
+            return bottomBar;
+        }
+
+        // This is due to an existing bug, where the bottom bar is duplcated.
+        // Permanantly hide affected comms to prevent issues
+        if (closeMobileFolderlinkSlots || $(bottomBar.parentElement).children('.mega-bottom-bar').length) {
+            newUserClosedSlots.add('mwebfolinkb');
+            newUserClosedSlots.add('mwebtfolinkb');
+            closeMobileFolderlinkSlots = true;
+            hideComms(['mwebfolinkb', 'mwebtfolinkb'], true);
+            updateBottomBar();
+            return bottomBar;
+        }
+
+        slotWrappers.mwebtfolinkb = undefined;
+        slotWrappers.mwebfolinkb = undefined;
+
+        const newBottomBar = document.createElement('div');
+        newBottomBar.classList.add('mega-bottom-bar');
+        bottomBar.appendChild(newBottomBar);
+        bottomBar.classList.add('mega-comms', 'mega-bottom-bar');
+        return newBottomBar;
+    };
+
+    // If comms are enabled, create new slots for comms to show in in the bottom bar
+    const createMobileBottomBarSlots = (bottomBar, isFolderLink) => {
+
+        if (/* !mega.flags.ab_ads || */
+            (currentPage === 'mobileFolderlink' && !isFolderLink) || closeMobileFolderlinkSlots) {
+            return;
+        }
+
+        const [mobileSlot, tabletSlot] = isFolderLink
+            ? ['mwebfolinkb', 'mwebtfolinkb']
+            : ['mwebfilinkb', 'mwebtfilinkb'];
+
+        const mobileslotWrapper = document.createElement('div');
+        mobileslotWrapper.classList.add('commercial-wrapper', 'mobile', 'hidden');
+        mobileslotWrapper.id = 'commercial-wrapper-' + mobileSlot;
+        const tabletslotWrapper = document.createElement('div');
+        tabletslotWrapper.classList.add('commercial-wrapper', 'tablet', 'hidden');
+        tabletslotWrapper.id = 'commercial-wrapper-' + tabletSlot;
+
+        bottomBar.appendChild(mobileslotWrapper);
+        bottomBar.appendChild(tabletslotWrapper);
+
+        // eslint-disable-next-line no-use-before-define
+        init('bottom-bar');
+    };
+
+    // Create the commSlots for mobile cloud drive if they do not already exist
+    const createMobileCloudDriveSlots = () => {
+
+        if (/* !mega.flags.ab_ads ||*/ !is_mobile || currentPage !== 'mobileClouddrive') {
+            return;
+        }
+
+        // When user navigates back/forward through pages, the slots may already exist
+        if ($slotParent.children().length < 1 && $slotParent[0]) {
+            const mobileCloudDriveSlot = document.createElement('div');
+            mobileCloudDriveSlot.classList.add('commercial-wrapper', 'mobile', 'hidden');
+            mobileCloudDriveSlot.id = 'commercial-wrapper-mwebcdb';
+            const tabletCloudDriveSlot = document.createElement('div');
+            tabletCloudDriveSlot.classList.add('commercial-wrapper', 'tablet', 'hidden');
+            tabletCloudDriveSlot.id = 'commercial-wrapper-mwebtcdb';
+
+            $slotParent[0].appendChild(mobileCloudDriveSlot);
+            $slotParent[0].appendChild(tabletCloudDriveSlot);
+        }
+    };
+
+    const shouldUpdatePage = (container) => {
+
+        return (container.offsetWidth >= 770 && pageWidthInfo.wideOrNarrow !== 'wide'
+            || container.offsetWidth < 770 && pageWidthInfo.wideOrNarrow !== 'narrow'
+            || (((window.outerHeight >= 600) && (container.offsetWidth >= 360)) !== pageWidthInfo.showSlot)
+            || ($fmholder.hasClass('selection-mode') !== copyOrMove)
+            || ($megaOverlay.hasClass('.active:not(.modal-dialog)') !== overlayActive)
+            || ($mediaViewer.hasClass('fullimage') !== imageOpen)
+            || (($filePreview.hasClass('active') && currentPage !== 'mobileFilelink') !== filePreviewOpen));
+    };
+
+    // Check if the comms need to be updated based on if the container is wide/tall enough for mobile/tablet comms,
+    // as well as the currently shown type of comm
+    const updateMobileComms = (container, forceUpdate) => {
+
+        if (!container) {
+            return;
+        }
+
+        if (shouldUpdatePage(container) || forceUpdate) {
+            copyOrMove = $fmholder.hasClass('selection-mode');
+            overlayActive = $megaOverlay.hasClass('.active:not(.modal-dialog)');
+            imageOpen = $mediaViewer.hasClass('fullimage');
+            filePreviewOpen = $filePreview.hasClass('active') && currentPage !== 'mobileFilelink';
+            commsCovered = copyOrMove || overlayActive || imageOpen || filePreviewOpen;
+
+            setMobileBottomBar(container.offsetWidth);
+
+            updateCurrentPage(true);
+
+            if (commsCovered) {
+                hideComms(activeSlots, true);
+                return;
+            }
+
+            if (currentPage === 'mobileClouddrive') {
+                if (pageWidthInfo.wideOrNarrow === 'wide') {
+                    $('.tablet', $slotParent).removeClass('hidden');
+                    $('.mobile', $slotParent).addClass('hidden');
+                    hideComms(['mwebcdb'], true);
+                }
+                else {
+                    $('.tablet', $slotParent).addClass('hidden');
+                    $('.mobile', $slotParent).removeClass('hidden');
+                    hideComms(['mwebtcdb'], true);
+                }
+            }
+            getComms(true, forceUpdate);
+        }
+    };
+
+    // Prevents comm showing when changing to tabs that do not have comms in the mobile home page
+    const mobileFmTabHander = () => {
+
+        if (currentPage !== 'mobileClouddrive') {
+            return;
+        }
+        const isCloudDrive = M.currentrootid === M.RootID;
+        if (isMobileCloudDrive !== isCloudDrive) {
+            isMobileCloudDrive = isCloudDrive;
+            getComms(true);
+            updateBottomBar();
+        }
+    };
+
+    // Initialise the cloud drive comm footer by pre-setting the correct commSlot to be shown, and updating the heights
+    // of the file manager and footer button in mobile cloud drive
+    const initCloudDriveAdFooter = (container) => {
+
+        $slotParent.removeClass('hidden');
+        if (pageWidthInfo.wideOrNarrow === 'wide') {
+            $('.tablet', $slotParent).removeClass('hidden');
+            hideComms(['mwebcdb'], true);
+        }
+        else {
+            $('.mobile', $slotParent).removeClass('hidden');
+            hideComms(['mwebtcdb'], true);
+        }
+        setMobileBottomBar(container.offsetWidth);
+    };
+
+    // Initialise the container and any needed elements to allow the comms to change which size is shown
+    // when the page is resized
+    const initMobileResizeHandler = (blockUpdate) => {
+
+        if (!is_mobile && !resizeHandlerActive) {
+            return;
+        }
+
+        resizeHandlerActive = true;
+
+        updateCurrentPage(true);
+
+        $fileManagerBlock = $fileManagerBlock || $('body .fmholder .file-manager-block');
+
+        const container = currentPage === 'mobileFilelink'
+            ? $startholder[0]
+            : $fileManagerBlock[0];
+
+        if (!container) {
+            return;
+        }
+
+        if (currentPage === 'mobileClouddrive') {
+            initCloudDriveAdFooter(container);
+            mobileFmTabHander();
+        }
+        $(window).rebind('resize.mega-comms-mobile', () => updateMobileComms(container, false));
+        if (!blockUpdate) {
+            updateMobileComms(container, true);
+        }
+    };
+
+    const updateDesktopComms = (container, forceUpdate) => {
+        if (container.offsetWidth >= 956 && pageWidthInfo.wideOrNarrow !== 'wide'
+        || container.offsetWidth < 956 && pageWidthInfo.wideOrNarrow !== 'narrow'
+        || ((container.offsetWidth >= 450) !== pageWidthInfo.showSlot)) {
+
+            pageWidthInfo.wideOrNarrow = container.offsetWidth >= 956
+                ? 'wide'
+                : 'narrow';
+            pageWidthInfo.showSlot = container.offsetWidth >= 450;
+
+            if (!pageWidthInfo.showSlot) {
+                hideComms(activeSlots, true);
+            }
+
+            getComms(false, forceUpdate);
+        }
+    };
+
+    const initDesktopResizeHandler = () => {
+        if (currentPage !== 'filelink') {
+            return;
+        }
+
+        resizeHandlerActive = true;
+
+        updateCurrentPage();
+
+        const container = $startholder[0];
+
+        $(window).rebind('resize.mega-comms-desktop', () => updateDesktopComms(container, false));
+        updateDesktopComms(container, true);
+    };
+
+    // Initialise the commercials. Reset for when the user goes to a new page without reloading
+    const init = (reset) => {
+
+        if (reset === 'bottom-bar') {
+            $fileManagerBlock = undefined;
+            $slotParent = undefined;
+            $filePreview = undefined;
+            updateCurrentPage(is_mobile, true);
+            return;
+        }
+        else if (reset) {
+            initialised = false;
+            $fileManagerBlock = undefined;
+            $slotParent = undefined;
+            $filePreview = undefined;
+            hideComms(activeSlots, true);
+            activeSlots = [];
+            resizeHandlerActive = false;
+
+            updateResizeHandlers();
+
+            // Some slotWrappers are deleted and recreated, we need the new elements
+            slotWrappers.mwebtfilinkb = undefined;
+            slotWrappers.mwebfilinkb = undefined;
+            slotWrappers.webfilinkb = undefined;
+            slotWrappers.webfilinkbs = undefined;
+            slotWrappers.mwebcdb = undefined;
+            slotWrappers.mwebtcdb = undefined;
+            loading.clear();
+            isMobileCloudDrive = false;
+        }
+
+        if (initialised /* || !mega.flags.ab_ads*/) {
+            return;
+        }
+
+        if (localStorage.commFlag | 0) {
+            console.error('Commercials are currently being controlled by a set flag: ' + localStorage.commFlag);
+        }
+
+        updateCurrentPage(is_mobile, true);
+
+        if (currentPage) {
+            initialised = true;
+        }
+
+        if (currentPage === 'mobileClouddrive') {
+            createMobileCloudDriveSlots();
+        }
+        else if (currentPage === 'filelink') {
+            initDesktopResizeHandler();
+        }
+
+        if (is_mobile) {
+            initMobileResizeHandler();
+        }
+        else {
+            getComms();
+        }
+
+    };
+
+    // When a new overlay is created or removed, check active overlays
+    const updateOverlays = (overlay) => {
+
+        // In the case of promo, a new overlay is created that needs fetching to check its state
+        if (overlay === 'promo') {
+            $megaOverlay = $(`body > .overlay-wrap:not(.modal-dialog)`);
+        }
+        else if (overlay === 'modal-dialog') {
+            $megaOverlay = $megaOverlay && $megaOverlay.not('.modal-dialog');
+        }
+
+        if (!$fileManagerBlock || !$startholder) {
+            updateCachedElements();
+        }
+
+        const container = currentPage === 'mobileFilelink'
+            ? $startholder[0]
+            : $fileManagerBlock[0];
+
+        updateMobileComms(container);
+        updateResizeHandlers();
+    };
+
+    // Usable from the console for testing, allows an account to force ads to show
+    // This is only available if the ab_ads flag is set, so user has seen advertisement info (just to be safe)
+    const forceComms = (value, unset) => {
+        /* if (!mega.flags.ab_ads) {
+            return;
+        }*/
+
+        value = value || 0;
+        let info;
+
+        if (value === 0) {
+            localStorage.commFlag = 0;
+            info = 'reset flag';
+            init(true);
+            return;
+        }
+
+        if (unset) {
+            localStorage.commFlag &= ~value;
+            info = 'unset: ' + value;
+        }
+        else {
+            localStorage.commFlag |= value;
+            info = 'set: ' + value;
+        }
+        if (d) {
+            console.group('comm flag updated');
+            console.info(info);
+            console.info('Now set to: ' + localStorage.commFlag);
+            console.groupEnd();
+        }
+
+        init(true);
+    };
+
+    const getAdFlag = () => {
+        if (!u_attr) {
+            console.error('You must be logged in to use this function');
+            return;
+        }
+        console.group('Current comm flags', u_attr['^!adflag']);
+        for (let i = 1; i < 32769; i *= 2) {
+            if (u_attr['^!adflag'] & i) {
+                console.info(`Flag ${i} is set`);
+            }
+        }
+        console.groupEnd();
+    };
+
+    const setAdFlag = (value, unset) => {
+        if (!u_attr) {
+            console.error('You must be logged in to use this function');
+            return;
+        }
+        value = +value;
+        if (unset && value !== 0) {
+            value = u_attr['^!adflag'] & ~value;
+        }
+        else if (value !== 0) {
+            value |= u_attr['^!adflag'];
+        }
+        mega.attr.set('adflag', value, -2, true);
+        u_attr['^!adflag'] = value;
+        console.info('Set mobile adflag to:', value);
+    };
+
+    // Usable from the console for testing, allows an account to see which comm flags are set
+    const getCommFlag = () => {
+        if (!d) {
+            return;
+        }
+        console.group('Current comm flags');
+        for (let i = 512; i < 16385; i *= 2) {
+            if (localStorage.commFlag & i) {
+                console.info(`Flag ${i} is set`);
+            }
+        }
+        console.groupEnd();
+    };
+
+    return {
+        getComms,
+        init,
+        mobileFmTabHander,
+        addCommsToBottomBar,
+        createMobileBottomBarSlots,
+        forceComms,
+        getCommFlag,
+        updateOverlays,
+        setVideoTheatreMode,
+        updateCommCookies,
+        setAdFlag,
+        getAdFlag
+    };
+});
+
+mBroadcaster.addListener('csp:settingsSaved', () => {
+    'use strict';
+    // if (mega.flags.ab_adse) {
+        mega.commercials.updateCommCookies();
+    // }
+});
+
+mBroadcaster.addListener('login2', () => {
+    'use strict';
+    // if (mega.flags.ab_ads) {
+        mega.commercials.init(true);
+    // }
+});
+
+mBroadcaster.addListener('mega:openfolder', () => {
+    'use strict';
+    // if (mega.flags.ab_ads) {
+        mega.commercials.getComms(is_mobile);
+    // }
+});
